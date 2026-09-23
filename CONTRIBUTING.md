@@ -12,7 +12,7 @@ The Pi extension lives in `extensions/git-worktree.ts`. Pi loads the TypeScript 
 
 ## Prerequisites
 
-- [Bun](https://bun.sh/)
+- Node.js 24 or later
 - [Pi](https://pi.dev) CLI
 - Git 2.20 or later
 - Optional: [GitHub CLI](https://cli.github.com/) for `/worktree pr`
@@ -22,7 +22,7 @@ The Pi extension lives in `extensions/git-worktree.ts`. Pi loads the TypeScript 
 ```bash
 git clone https://github.com/codecapitano/pi-worktree.git
 cd pi-worktree
-bun install
+npm test
 pi -e ./extensions/git-worktree.ts
 ```
 

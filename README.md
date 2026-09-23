@@ -62,11 +62,9 @@ If the branch already has a worktree, the command shows its existing path.
 
 - Refuses to remove the main worktree.
 - Refuses to remove locked worktrees.
-- Confirms before removal.
-- Offers force removal after a second confirmation when a worktree is dirty.
+- Requires interactive confirmation.
+- Refuses to force-remove dirty worktrees.
 - Keeps the branch.
-
-The dirty-worktree behavior and the rest of the extension will undergo a safety review before this fork is recommended for regular use. Until that review is complete, use it only with disposable repositories.
 
 ### Pull request checkout
 
@@ -81,7 +79,7 @@ This command requires an authenticated [GitHub CLI](https://cli.github.com/):
 ```bash
 git clone https://github.com/codecapitano/pi-worktree.git
 cd pi-worktree
-bun install
+npm test
 pi -e ./extensions/git-worktree.ts
 ```
 
