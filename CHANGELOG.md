@@ -13,11 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Require exact branch or path matches for removal.
 - Reject invalid branch names before invoking fetch or worktree commands.
 - Verify a fetched pull request head before reusing a local branch.
+- Resolve pull request metadata and Git refs against the same `origin` repository.
+- Stop branch creation when remote discovery or fetch fails.
 
 ### Changed
 
 - Add unit and temporary-repository integration tests.
 - Remove development dependencies and install-time hooks.
+- Pin GitHub Actions to immutable commit SHAs.
 
 ## [1.2.1](https://github.com/thisuxhq/pi-worktree/compare/pi-worktree-v1.2.0...pi-worktree-v1.2.1) (2026-07-21)
 

@@ -189,6 +189,41 @@ test("creates and safely removes a real temporary worktree while retaining its b
 	}
 });
 
+test("no-origin repository ignores stale origin base refs", async () => {
+	const calls = [];
+	const command = loadCommand(async (_program, args) => {
+		calls.push(args);
+		const prelude = repoPrelude(args);
+		if (prelude) return prelude;
+		if (args[0] === "check-ref-format") return { code: 0, stdout: "feature/new", stderr: "" };
+		if (args[0] === "worktree" && args[1] === "list") {
+			return { code: 0, stdout: `worktree /repo\nHEAD aaaa\nbranch refs/heads/main\n`, stderr: "" };
+		}
+		if (args[0] === "remote" && args[1] === "get-url") {
+			return { code: 2, stdout: "", stderr: "No such remote 'origin'" };
+		}
+		if (args[0] === "show-ref" && args.at(-1) === "refs/heads/main") {
+			return { code: 0, stdout: "", stderr: "" };
+		}
+		if (args[0] === "show-ref" && args.at(-1).startsWith("refs/remotes/origin/")) {
+			return { code: 0, stdout: "", stderr: "" };
+		}
+		if (args[0] === "show-ref") return { code: 1, stdout: "", stderr: "" };
+		if (args[0] === "worktree" && args[1] === "add") {
+			return { code: 0, stdout: "", stderr: "" };
+		}
+		if (_program === "bash") return { code: 1, stdout: "", stderr: "clipboard unavailable" };
+		throw new Error(`unexpected call: ${args.join(" ")}`);
+	});
+	const state = context();
+
+	await command.handler("add feature/new", state.ctx);
+
+	assert.equal(calls.some((args) => args[0] === "symbolic-ref"), false);
+	const add = calls.find((args) => args[0] === "worktree" && args[1] === "add");
+	assert.deepEqual(add, ["worktree", "add", "-b", "feature/new", "/repo-feature-new", "main"]);
+});
+
 test("PR checkout creates a branch from the verified fetched ref", async () => {
 	const calls = [];
 	const command = loadCommand(async (program, args) => {
@@ -198,9 +233,12 @@ test("PR checkout creates a branch from the verified fetched ref", async () => {
 		if (program === "gh") {
 			return {
 				code: 0,
-				stdout: JSON.stringify({ headRefName: "feature/a", number: 42, title: "Feature" }),
+				stdout: JSON.stringify({ headRefName: "feature/a", headRefOid: "bbbb", number: 42, title: "Feature" }),
 				stderr: "",
 			};
+		}
+		if (args[0] === "remote" && args[1] === "get-url") {
+			return { code: 0, stdout: "git@github.com:owner/repo.git", stderr: "" };
 		}
 		if (program === "bash") return { code: 1, stdout: "", stderr: "clipboard unavailable" };
 		if (args[0] === "check-ref-format") return { code: 0, stdout: "feature/a", stderr: "" };
@@ -223,6 +261,8 @@ test("PR checkout creates a branch from the verified fetched ref", async () => {
 
 	await command.handler("pr 42", state.ctx);
 
+	const ghView = calls.find(({ program }) => program === "gh");
+	assert.deepEqual(ghView.args.slice(-2), ["--repo", "git@github.com:owner/repo.git"]);
 	const add = calls.find(({ args }) => args[0] === "worktree" && args[1] === "add");
 	assert.deepEqual(add.args, [
 		"worktree",
@@ -235,6 +275,32 @@ test("PR checkout creates a branch from the verified fetched ref", async () => {
 	assert.match(state.notifications.at(-1).message, /PR #42 Feature/);
 });
 
+test("remote branch fetch failure does not create a branch from the default base", async () => {
+	const calls = [];
+	const command = loadCommand(async (_program, args) => {
+		calls.push(args);
+		const prelude = repoPrelude(args);
+		if (prelude) return prelude;
+		if (args[0] === "check-ref-format") return { code: 0, stdout: "feature/remote", stderr: "" };
+		if (args[0] === "worktree" && args[1] === "list") {
+			return { code: 0, stdout: `worktree /repo\nHEAD aaaa\nbranch refs/heads/main\n`, stderr: "" };
+		}
+		if (args[0] === "show-ref") return { code: 1, stdout: "", stderr: "" };
+		if (args[0] === "remote" && args[1] === "get-url") {
+			return { code: 0, stdout: "git@github.com:owner/repo.git", stderr: "" };
+		}
+		if (args[0] === "ls-remote") return { code: 0, stdout: "bbbb\trefs/heads/feature/remote", stderr: "" };
+		if (args[0] === "fetch") return { code: 1, stdout: "", stderr: "network failure" };
+		throw new Error(`unexpected call: ${args.join(" ")}`);
+	});
+	const state = context();
+
+	await command.handler("add feature/remote", state.ctx);
+
+	assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "add"), false);
+	assert.match(state.notifications.at(-1).message, /Could not fetch origin\/feature\/remote/);
+});
+
 test("PR checkout refuses a stale local branch", async () => {
 	const calls = [];
 	const command = loadCommand(async (program, args) => {
@@ -244,9 +310,12 @@ test("PR checkout refuses a stale local branch", async () => {
 		if (program === "gh") {
 			return {
 				code: 0,
-				stdout: JSON.stringify({ headRefName: "feature/a", number: 42, title: "Feature" }),
+				stdout: JSON.stringify({ headRefName: "feature/a", headRefOid: "bbbb", number: 42, title: "Feature" }),
 				stderr: "",
 			};
+		}
+		if (args[0] === "remote" && args[1] === "get-url") {
+			return { code: 0, stdout: "git@github.com:owner/repo.git", stderr: "" };
 		}
 		if (args[0] === "check-ref-format") return { code: 0, stdout: "feature/a", stderr: "" };
 		if (args[0] === "fetch") return { code: 0, stdout: "", stderr: "" };
