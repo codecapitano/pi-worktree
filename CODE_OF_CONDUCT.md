@@ -60,7 +60,7 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at
-**hello@thisux.com**.
+the maintainers through the contact methods listed on the [codecapitano GitHub profile](https://github.com/codecapitano).
 
 All complaints will be reviewed and investigated promptly and fairly.
 

@@ -1,38 +1,26 @@
-# Security Policy
+# Security policy
 
 ## Supported versions
 
-| Version | Supported |
-| ------- | --------- |
-| `main` / latest release (`1.x`) | Yes |
-| Older tags | No — please upgrade |
+The fork has not published a supported release. Security fixes land on `main` while the initial review is in progress.
 
-Security fixes land on `main` and ship in the next npm release of `@thisux/pi-worktree`.
+## Report a vulnerability
 
-## Reporting a vulnerability
+Do not open a public issue for a security-sensitive finding.
 
-**Do not open a public GitHub issue for security-sensitive findings.**
+Use [GitHub private vulnerability reporting](https://github.com/codecapitano/pi-worktree/security/advisories/new). Include:
 
-Email **hello@thisux.com** with subject:
+1. A description of the issue and its impact.
+2. Steps to reproduce it or a proof of concept.
+3. The affected commit or version, if known.
+4. A suggested fix, if available.
 
-```text
-[security] thisuxhq/pi-worktree
-```
+## Scope
 
-Include:
+This Pi extension runs `git` and `gh` with the user's operating-system permissions. Relevant reports include:
 
-1. Description of the issue and potential impact
-2. Steps to reproduce (or a proof of concept)
-3. Affected version / commit if known
-4. Any suggested fix
-
-We will acknowledge within a few business days and work with you on a fix and disclosure timeline.
-
-## Scope notes
-
-This package is a [Pi](https://pi.dev) extension that runs `git` / `gh` via the coding agent. Reports that matter most:
-
-- Unsafe command construction or argument injection
-- Worktree remove/force paths that destroy data without confirmation
-- Path traversal outside expected worktree layout
-- Supply-chain issues in published tarballs
+- unsafe command construction or argument injection;
+- worktree removal that can destroy data;
+- ambiguous or unsafe path selection;
+- path traversal outside the intended worktree location;
+- supply-chain issues in the repository or packed package.
