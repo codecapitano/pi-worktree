@@ -1,12 +1,12 @@
-# @thisux/pi-worktree
+# @codecapitano/pi-worktree
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Copyright](https://img.shields.io/badge/©-THISUX%20Private%20Limited-111111.svg)](LICENSE)
-[![npm](https://img.shields.io/npm/v/@thisux/pi-worktree.svg)](https://www.npmjs.com/package/@thisux/pi-worktree)
 
 Git worktree slash commands for [Pi](https://pi.dev).
 
-Create, list, open, remove, and PR-checkout worktrees without leaving the session.
+Create, list, open, remove, and check out pull request worktrees without leaving the session.
+
+This repository is a maintained fork of [`thisuxhq/pi-worktree`](https://github.com/thisuxhq/pi-worktree). See [NOTICE.md](NOTICE.md) for its provenance.
 
 ## Layout
 
@@ -15,12 +15,14 @@ Create, list, open, remove, and PR-checkout worktrees without leaving the sessio
 ~/AGI/mobile-fix-login/     ← worktree for fix/login
 ```
 
-Sibling folders next to the main repo: `<repo>-<branch-slug>`.
+Sibling folders next to the main repository use the form `<repo>-<branch-slug>`.
 
 ## Install
 
+The fork is not published to npm. Install it from GitHub:
+
 ```bash
-pi install npm:@thisux/pi-worktree
+pi install git:github.com/codecapitano/pi-worktree
 ```
 
 Already in a session?
@@ -29,93 +31,74 @@ Already in a session?
 /reload
 ```
 
-One-off try (no settings write):
+Try the local extension during development:
 
 ```bash
-pi -e npm:@thisux/pi-worktree
-```
-
-Update later:
-
-```bash
-pi update npm:@thisux/pi-worktree
+pi -e ./extensions/git-worktree.ts
 ```
 
 ## Usage
 
 | Command | What it does |
 |---|---|
-| `/worktree` | List worktrees; pick one to copy path |
-| `/worktree ls` | Same as above |
-| `/worktree <branch>` | Create worktree for branch |
-| `/worktree add <branch>` | Same as above |
-| `/worktree open <branch>` | Show path (+ copy on macOS) |
-| `/worktree rm <branch>` | Remove worktree (keeps branch; confirms) |
-| `/worktree pr <number>` | Fetch PR via `gh`, create worktree |
-| `/worktree help` | Show help |
+| `/worktree` | List worktrees; pick one to copy its path |
+| `/worktree ls` | List worktrees |
+| `/worktree <branch>` | Create a worktree for a branch |
+| `/worktree add <branch>` | Create a worktree for a branch |
+| `/worktree open <branch>` | Show the path and copy it on macOS |
+| `/worktree rm <branch>` | Remove a worktree after confirmation; keep the branch |
+| `/worktree pr <number>` | Fetch a pull request with `gh` and create a worktree |
+| `/worktree help` | Show command help |
 
 ### Create behavior
 
-1. Local branch exists → attach worktree to it
-2. Else remote `origin/<branch>` → track it
-3. Else new branch off default (`origin/main` / `main` / `master`)
+1. If the local branch exists, attach a worktree to it.
+2. Otherwise, if `origin/<branch>` exists, track it.
+3. Otherwise, create the branch from the default branch, such as `origin/main`, `main`, or `master`.
 
-Path already taken by that branch → shows existing path (copied).
+If the branch already has a worktree, the command shows its existing path.
 
-### Remove safety
+### Removal safety
 
-- Refuses main worktree
-- Refuses locked worktrees
-- Always confirms
-- Dirty tree needs a second confirm before `--force`
-- Branch is kept; only the worktree directory is removed
+- Refuses to remove the main worktree.
+- Refuses to remove locked worktrees.
+- Confirms before removal.
+- Offers force removal after a second confirmation when a worktree is dirty.
+- Keeps the branch.
 
-### PR checkout
+The dirty-worktree behavior and the rest of the extension will undergo a safety review before this fork is recommended for regular use. Until that review is complete, use it only with disposable repositories.
 
-Needs [GitHub CLI](https://cli.github.com/) (`gh`) authenticated.
+### Pull request checkout
+
+This command requires an authenticated [GitHub CLI](https://cli.github.com/):
 
 ```text
 /worktree pr 42
 ```
 
-Fetches `pull/42/head` and creates a worktree on the PR head branch.
+## Development
 
-## Notes
+```bash
+git clone https://github.com/codecapitano/pi-worktree.git
+cd pi-worktree
+bun install
+pi -e ./extensions/git-worktree.ts
+```
 
-- Must be inside a git repo.
-- Never force-pushes, hard-resets, or `clean -fdx`.
-- Prefer the package over a hand-copied `~/.pi/agent/extensions/git-worktree.ts` — remove the loose file so it doesn't load twice:
-
-  ```bash
-  rm -f ~/.pi/agent/extensions/git-worktree.ts
-  ```
-
-- Enable/disable via `pi config`. Confirm with `pi list`.
+The repository is intentionally private to package registries for now. Automated publication is disabled until the fork has been reviewed and tested.
 
 ## Links
 
-- [npm](https://www.npmjs.com/package/@thisux/pi-worktree)
-- [pi package catalog](https://pi.dev/packages)
+- [Upstream](https://github.com/thisuxhq/pi-worktree)
+- [Fork provenance](NOTICE.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security](SECURITY.md)
 - [Changelog](CHANGELOG.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
-- [Repo](https://github.com/thisuxhq/pi-worktree)
-
-## Release flow
-
-1. Land PRs on `main` with [conventional commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, …).
-2. [release-please](https://github.com/googleapis/release-please) opens a release PR (version bump + `CHANGELOG.md`).
-3. Merge the release PR → GitHub Release/tag → CI runs `bun publish`.
-
-Manual republish: Actions → **Release** → **Run workflow** (pass an existing tag).
-
-Needs repo secret `NPM_TOKEN` (npm automation token allowed to publish under `@thisux`).
+- [Repository](https://github.com/codecapitano/pi-worktree)
 
 ## License
 
-Copyright © 2026 [THISUX Private Limited](https://github.com/thisuxhq).
+The original work is copyright © 2026 [THISUX Private Limited](https://github.com/thisuxhq).
 
-Released under the [MIT License](LICENSE). You may use, modify, and distribute
-this project for personal and commercial purposes, provided the copyright and
-permission notice are retained.
+The original work and modifications are available under the [MIT License](LICENSE). Retain the copyright and permission notice when copying or distributing substantial portions of the software.

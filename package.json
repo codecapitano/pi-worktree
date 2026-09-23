@@ -1,18 +1,19 @@
 {
-  "name": "@thisux/pi-worktree",
+  "name": "@codecapitano/pi-worktree",
   "version": "1.2.1",
+  "private": true,
   "description": "Git worktree slash commands for Pi (/worktree ls|add|open|rm|pr)",
   "license": "MIT",
   "type": "module",
   "author": "Sanju <https://sanju.sh/>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thisuxhq/pi-worktree.git"
+    "url": "git+https://github.com/codecapitano/pi-worktree.git"
   },
   "bugs": {
-    "url": "https://github.com/thisuxhq/pi-worktree/issues"
+    "url": "https://github.com/codecapitano/pi-worktree/issues"
   },
-  "homepage": "https://github.com/thisuxhq/pi-worktree#readme",
+  "homepage": "https://github.com/codecapitano/pi-worktree#readme",
   "keywords": [
     "pi-package",
     "pi-coding-agent",
@@ -20,12 +21,13 @@
     "extension",
     "git",
     "worktree",
-    "thisux"
+    "codecapitano"
   ],
   "files": [
     "extensions",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE.md"
   ],
   "pi": {
     "extensions": [
@@ -34,9 +36,6 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
-  },
-  "publishConfig": {
-    "access": "public"
   },
   "scripts": {
     "prepare": "[ -z \"$CI\" ] && husky || true"
