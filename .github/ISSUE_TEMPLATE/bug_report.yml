@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report. For **security** issues, do not use this form — see [SECURITY.md](https://github.com/thisuxhq/pi-worktree/blob/main/SECURITY.md).
+        Thanks for the report. For **security** issues, do not use this form. Submit a [private vulnerability report](https://github.com/codecapitano/pi-worktree/security/advisories/new).
   - type: dropdown
     id: area
     attributes:
@@ -27,8 +27,8 @@ body:
     id: versions
     attributes:
       label: Versions
-      description: Package version (`npm view @thisux/pi-worktree version`), Pi version (`pi --version`), Git version.
-      placeholder: "@thisux/pi-worktree 1.2.0 · pi 0.81.0 · git 2.x"
+      description: Fork commit, Pi version (`pi --version`), and Git version.
+      placeholder: "commit abc1234 · pi 0.87.1 · git 2.x"
     validations:
       required: true
   - type: textarea

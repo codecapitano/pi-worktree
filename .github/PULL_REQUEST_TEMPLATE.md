@@ -17,9 +17,9 @@
   - [ ] `ls` / interactive pick
   - [ ] `add` (local / remote / new branch)
   - [ ] `open`
-  - [ ] `rm` (confirm + dirty force)
+  - [ ] `rm` (confirm + dirty refusal)
   - [ ] `pr` (if `gh` change)
-- [ ] Did not break safety: no main-worktree remove, no force without confirm
+- [ ] Did not break safety: no main-worktree or force removal
 
 ## Notes
 

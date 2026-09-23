@@ -17,8 +17,8 @@
  * Safety:
  * - must be inside a git repo
  * - never force-push / hard-reset / clean -fdx
- * - rm always confirms
- * - rm --force only after a second confirm if worktree is dirty
+ * - rm requires an interactive confirmation
+ * - dirty worktrees are never force-removed
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -26,7 +26,7 @@ import { basename, dirname, join } from "node:path";
 
 type ExecResult = { code: number; stdout: string; stderr: string };
 
-type Worktree = {
+export type Worktree = {
 	path: string;
 	head: string;
 	branch: string | null; // null = detached
@@ -42,7 +42,7 @@ async function run(
 ): Promise<ExecResult> {
 	const result = await pi.exec("git", args, cwd ? { cwd } : undefined);
 	return {
-		code: result.code ?? 0,
+		code: result.code ?? 1,
 		stdout: (result.stdout ?? "").trim(),
 		stderr: (result.stderr ?? "").trim(),
 	};
@@ -65,7 +65,7 @@ async function ensureRepo(
 	return top.stdout;
 }
 
-function parseWorktrees(porcelain: string): Worktree[] {
+export function parseWorktrees(porcelain: string): Worktree[] {
 	const items: Worktree[] = [];
 	let current: Partial<Worktree> | null = null;
 
@@ -115,7 +115,7 @@ async function listWorktrees(pi: ExtensionAPI, cwd: string): Promise<Worktree[]>
 	return parseWorktrees(result.stdout);
 }
 
-function branchSlug(branch: string): string {
+export function branchSlug(branch: string): string {
 	return branch
 		.replace(/^refs\/heads\//, "")
 		.replace(/[^a-zA-Z0-9._-]+/g, "-")
@@ -179,29 +179,32 @@ function resolveWorktreePath(mainPath: string, branch: string): string {
 	return join(parent, `${repo}-${branchSlug(branch)}`);
 }
 
-function findWorktree(
+export function findWorktreeExact(
 	worktrees: Worktree[],
 	query: string,
 ): Worktree | undefined {
 	const q = query.trim();
 	if (!q) return undefined;
-	// Exact path
-	const byPath = worktrees.find((w) => w.path === q);
-	if (byPath) return byPath;
-	// Exact branch
-	const byBranch = worktrees.find((w) => w.branch === q);
-	if (byBranch) return byBranch;
-	// Slug match (fix-login matches fix/login)
+	return worktrees.find((w) => w.path === q || w.branch === q);
+}
+
+export function findWorktree(
+	worktrees: Worktree[],
+	query: string,
+): Worktree | undefined {
+	const q = query.trim();
+	if (!q) return undefined;
+	const exact = findWorktreeExact(worktrees, q);
+	if (exact) return exact;
+
 	const slug = branchSlug(q);
-	const bySlug = worktrees.find(
-		(w) => w.branch !== null && branchSlug(w.branch) === slug,
+	const fuzzy = worktrees.filter(
+		(w) =>
+			(w.branch !== null && branchSlug(w.branch) === slug) ||
+			w.path.endsWith(`/${q}`) ||
+			w.path.endsWith(`-${slug}`),
 	);
-	if (bySlug) return bySlug;
-	// Path suffix
-	const bySuffix = worktrees.find(
-		(w) => w.path.endsWith(`/${q}`) || w.path.endsWith(`-${slug}`),
-	);
-	return bySuffix;
+	return fuzzy.length === 1 ? fuzzy[0] : undefined;
 }
 
 async function copyToClipboard(pi: ExtensionAPI, text: string): Promise<boolean> {
@@ -221,6 +224,24 @@ async function refExists(
 	return r.code === 0;
 }
 
+async function resolveRef(
+	pi: ExtensionAPI,
+	cwd: string,
+	ref: string,
+): Promise<string | null> {
+	const result = await run(pi, ["rev-parse", "--verify", ref], cwd);
+	return result.code === 0 && result.stdout ? result.stdout : null;
+}
+
+async function isValidBranch(
+	pi: ExtensionAPI,
+	cwd: string,
+	branch: string,
+): Promise<boolean> {
+	const result = await run(pi, ["check-ref-format", "--branch", branch], cwd);
+	return result.code === 0;
+}
+
 async function createWorktree(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
@@ -228,10 +249,15 @@ async function createWorktree(
 	branch: string,
 	base?: string,
 ): Promise<void> {
+	if (!(await isValidBranch(pi, cwd, branch))) {
+		ctx.ui.notify(`Invalid branch name: ${branch}`, "error");
+		return;
+	}
+
 	const worktrees = await listWorktrees(pi, cwd);
 	const mainPath = mainWorktreePath(worktrees) || cwd;
 
-	const existing = findWorktree(worktrees, branch);
+	const existing = findWorktreeExact(worktrees, branch);
 	if (existing) {
 		const copied = await copyToClipboard(pi, existing.path);
 		ctx.ui.notify(
@@ -347,10 +373,10 @@ async function removeWorktree(
 ): Promise<void> {
 	const worktrees = await listWorktrees(pi, cwd);
 	const mainPath = mainWorktreePath(worktrees);
-	const wt = findWorktree(worktrees, query);
+	const wt = findWorktreeExact(worktrees, query);
 
 	if (!wt) {
-		ctx.ui.notify(`No worktree matching "${query}"`, "error");
+		ctx.ui.notify(`No exact worktree matching "${query}". Use /worktree ls to copy the exact branch or path.`, "error");
 		return;
 	}
 	if (wt.path === mainPath) {
@@ -362,42 +388,27 @@ async function removeWorktree(
 		return;
 	}
 
-	if (ctx.hasUI) {
-		const ok = await ctx.ui.confirm(
-			"Remove worktree?",
-			`${wt.branch ?? "detached"}\n${wt.path}\n\nBranch is kept. Only the worktree directory is removed.`,
-		);
-		if (!ok) {
-			ctx.ui.notify("Aborted", "warning");
-			return;
-		}
+	if (!ctx.hasUI) {
+		ctx.ui.notify("Removing a worktree requires interactive confirmation", "error");
+		return;
 	}
 
-	let rm = await run(pi, ["worktree", "remove", wt.path], cwd);
+	const ok = await ctx.ui.confirm(
+		"Remove worktree?",
+		`${wt.branch ?? "detached"}\n${wt.path}\n\nBranch is kept. Only a clean worktree can be removed.`,
+	);
+	if (!ok) {
+		ctx.ui.notify("Aborted", "warning");
+		return;
+	}
+
+	const rm = await run(pi, ["worktree", "remove", wt.path], cwd);
 	if (rm.code !== 0) {
-		const detail = rm.stderr || rm.stdout;
-		const dirty =
-			/dirty|contains modified|git worktree remove --force/i.test(detail);
-
-		if (dirty && ctx.hasUI) {
-			const force = await ctx.ui.confirm(
-				"Worktree has local changes",
-				`${detail}\n\nForce remove? Uncommitted changes in the worktree will be lost.`,
-			);
-			if (!force) {
-				ctx.ui.notify("Aborted", "warning");
-				return;
-			}
-			rm = await run(pi, ["worktree", "remove", "--force", wt.path], cwd);
-		}
-
-		if (rm.code !== 0) {
-			ctx.ui.notify(
-				`worktree remove failed:\n${rm.stderr || rm.stdout}`,
-				"error",
-			);
-			return;
-		}
+		ctx.ui.notify(
+			`worktree remove refused; the worktree was left intact:\n${rm.stderr || rm.stdout}`,
+			"error",
+		);
+		return;
 	}
 
 	ctx.ui.notify(
@@ -447,16 +458,10 @@ async function createFromPr(
 		return;
 	}
 
-	// gh pr checkout can move current branch; instead resolve head ref then add worktree.
+	// gh pr checkout can move the current branch, so resolve and fetch the PR explicitly.
 	const view = await pi.exec(
 		"gh",
-		[
-			"pr",
-			"view",
-			prNumber,
-			"--json",
-			"headRefName,headRepository,headRepositoryOwner,number,title,isCrossRepository",
-		],
+		["pr", "view", prNumber, "--json", "headRefName,number,title"],
 		{ cwd },
 	);
 
@@ -472,7 +477,6 @@ async function createFromPr(
 		headRefName?: string;
 		number?: number;
 		title?: string;
-		isCrossRepository?: boolean;
 	};
 	try {
 		data = JSON.parse(view.stdout ?? "{}");
@@ -487,66 +491,78 @@ async function createFromPr(
 		return;
 	}
 
-	// Fetch the PR head into a local ref, then create a local branch if needed.
-	// Prefer: git fetch origin pull/<n>/head:<branch> when branch is unique enough.
+	if (!(await isValidBranch(pi, cwd, branch))) {
+		ctx.ui.notify(`PR #${prNumber} has an invalid head branch: ${branch}`, "error");
+		return;
+	}
+
+	const prRef = `refs/pi-worktree/pr/${prNumber}`;
 	const fetchPr = await run(
 		pi,
-		["fetch", "origin", `pull/${prNumber}/head:${branch}`],
+		["fetch", "origin", `+pull/${prNumber}/head:${prRef}`],
 		cwd,
 	);
-
-	// If branch already exists, fetch above fails — try plain fetch of PR head then worktree add.
 	if (fetchPr.code !== 0) {
-		const hasLocal = await refExists(pi, cwd, `refs/heads/${branch}`);
-		if (!hasLocal) {
-			// Fetch to FETCH_HEAD and create branch from it.
-			const fetchHead = await run(
-				pi,
-				["fetch", "origin", `pull/${prNumber}/head`],
-				cwd,
-			);
-			if (fetchHead.code !== 0) {
-				ctx.ui.notify(
-					`Could not fetch PR #${prNumber}:\n${fetchPr.stderr || fetchHead.stderr}`,
-					"error",
-				);
-				return;
-			}
-			// Create local branch from FETCH_HEAD via worktree add -b
-			const worktrees = await listWorktrees(pi, cwd);
-			const mainPath = mainWorktreePath(worktrees) || cwd;
-			const existing = findWorktree(worktrees, branch);
-			if (existing) {
-				await openWorktree(pi, ctx, cwd, branch);
-				return;
-			}
-			const path = resolveWorktreePath(mainPath, branch);
-			const add = await run(
-				pi,
-				["worktree", "add", "-b", branch, path, "FETCH_HEAD"],
-				cwd,
-			);
-			if (add.code !== 0) {
-				ctx.ui.notify(
-					`worktree add failed:\n${add.stderr || add.stdout}`,
-					"error",
-				);
-				return;
-			}
-			const copied = await copyToClipboard(pi, path);
+		ctx.ui.notify(
+			`Could not fetch PR #${prNumber}:\n${fetchPr.stderr || fetchPr.stdout}`,
+			"error",
+		);
+		return;
+	}
+
+	const fetchedHead = await resolveRef(pi, cwd, prRef);
+	if (!fetchedHead) {
+		ctx.ui.notify(`Could not resolve the fetched head for PR #${prNumber}`, "error");
+		return;
+	}
+
+	const worktrees = await listWorktrees(pi, cwd);
+	const mainPath = mainWorktreePath(worktrees) || cwd;
+	const existing = findWorktreeExact(worktrees, branch);
+	if (existing) {
+		if (existing.head !== fetchedHead) {
 			ctx.ui.notify(
-				`PR #${prNumber} ${data.title ?? ""}\nCreated ${branch}\n→ ${path}${copied ? "\n(path copied)" : ""}\n\nNext: cd ${path} && pi`,
-				"info",
+				`Branch ${branch} is already checked out at a different commit. PR #${prNumber} was not opened.`,
+				"error",
 			);
 			return;
 		}
+		await openWorktree(pi, ctx, cwd, branch);
+		return;
 	}
 
-	// createWorktree notifies with path; prefix PR context first.
-	if (data.title) {
-		ctx.ui.notify(`PR #${prNumber}: ${data.title}`, "info");
+	const localRef = `refs/heads/${branch}`;
+	const localHead = await resolveRef(pi, cwd, localRef);
+	if (localHead && localHead !== fetchedHead) {
+		ctx.ui.notify(
+			`Local branch ${branch} does not match PR #${prNumber}. Rename or remove the local branch before retrying.`,
+			"error",
+		);
+		return;
 	}
-	await createWorktree(pi, ctx, cwd, branch);
+
+	const path = resolveWorktreePath(mainPath, branch);
+	if (worktrees.some((wt) => wt.path === path)) {
+		ctx.ui.notify(`Worktree path is already in use:\n${path}`, "error");
+		return;
+	}
+
+	const add = localHead
+		? await run(pi, ["worktree", "add", path, branch], cwd)
+		: await run(pi, ["worktree", "add", "-b", branch, path, prRef], cwd);
+	if (add.code !== 0) {
+		ctx.ui.notify(
+			`worktree add failed:\n${add.stderr || add.stdout}`,
+			"error",
+		);
+		return;
+	}
+
+	const copied = await copyToClipboard(pi, path);
+	ctx.ui.notify(
+		`PR #${prNumber} ${data.title ?? ""}\nCreated ${branch}\n→ ${path}${copied ? "\n(path copied)" : ""}\n\nNext: cd ${path} && pi`,
+		"info",
+	);
 }
 
 function parseArgs(raw: string): { cmd: string; rest: string } {
