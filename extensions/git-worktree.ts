@@ -141,15 +141,21 @@ function formatWt(wt: Worktree, mainPath: string): string {
 	return tags ? `${name}  →  ${wt.path}  (${tags})` : `${name}  →  ${wt.path}`;
 }
 
-async function detectDefaultBranch(pi: ExtensionAPI, cwd: string): Promise<string> {
-	const remoteHead = await run(
-		pi,
-		["symbolic-ref", "refs/remotes/origin/HEAD"],
-		cwd,
-	);
-	if (remoteHead.code === 0 && remoteHead.stdout) {
-		const match = remoteHead.stdout.match(/refs\/remotes\/origin\/(.+)$/);
-		if (match?.[1]) return match[1];
+async function detectDefaultBranch(
+	pi: ExtensionAPI,
+	cwd: string,
+	hasOrigin: boolean,
+): Promise<string> {
+	if (hasOrigin) {
+		const remoteHead = await run(
+			pi,
+			["symbolic-ref", "refs/remotes/origin/HEAD"],
+			cwd,
+		);
+		if (remoteHead.code === 0 && remoteHead.stdout) {
+			const match = remoteHead.stdout.match(/refs\/remotes\/origin\/(.+)$/);
+			if (match?.[1]) return match[1];
+		}
 	}
 	for (const candidate of ["main", "master"]) {
 		const local = await run(
@@ -158,12 +164,14 @@ async function detectDefaultBranch(pi: ExtensionAPI, cwd: string): Promise<strin
 			cwd,
 		);
 		if (local.code === 0) return candidate;
-		const remote = await run(
-			pi,
-			["show-ref", "--verify", "--quiet", `refs/remotes/origin/${candidate}`],
-			cwd,
-		);
-		if (remote.code === 0) return candidate;
+		if (hasOrigin) {
+			const remote = await run(
+				pi,
+				["show-ref", "--verify", "--quiet", `refs/remotes/origin/${candidate}`],
+				cwd,
+			);
+			if (remote.code === 0) return candidate;
+		}
 	}
 	return "main";
 }
@@ -224,6 +232,14 @@ async function refExists(
 	return r.code === 0;
 }
 
+async function getOriginUrl(
+	pi: ExtensionAPI,
+	cwd: string,
+): Promise<string | null> {
+	const result = await run(pi, ["remote", "get-url", "origin"], cwd);
+	return result.code === 0 && result.stdout ? result.stdout : null;
+}
+
 async function resolveRef(
 	pi: ExtensionAPI,
 	cwd: string,
@@ -280,21 +296,49 @@ async function createWorktree(
 	const localRef = `refs/heads/${branch}`;
 	const remoteRef = `refs/remotes/origin/${branch}`;
 	const hasLocal = await refExists(pi, cwd, localRef);
-	const hasRemote = await refExists(pi, cwd, remoteRef);
+	let hasRemote = await refExists(pi, cwd, remoteRef);
+	const originUrl = await getOriginUrl(pi, cwd);
 
-	// Refresh remote tip when we might need it.
 	if (!hasLocal) {
-		await run(pi, ["fetch", "origin", branch], cwd);
+		if (!originUrl) {
+			hasRemote = false;
+		} else {
+			const remoteCheck = await run(
+				pi,
+				["ls-remote", "--exit-code", "--heads", "origin", branch],
+				cwd,
+			);
+			if (remoteCheck.code === 0) {
+				const fetched = await run(
+					pi,
+					["fetch", "origin", `+refs/heads/${branch}:${remoteRef}`],
+					cwd,
+				);
+				if (fetched.code !== 0) {
+					ctx.ui.notify(
+						`Could not fetch origin/${branch}:\n${fetched.stderr || fetched.stdout}`,
+						"error",
+					);
+					return;
+				}
+				hasRemote = true;
+			} else if (remoteCheck.code === 2) {
+				hasRemote = false;
+			} else {
+				ctx.ui.notify(
+					`Could not check origin for ${branch}:\n${remoteCheck.stderr || remoteCheck.stdout}`,
+					"error",
+				);
+				return;
+			}
+		}
 	}
 
-	const hasLocalAfter = hasLocal || (await refExists(pi, cwd, localRef));
-	const hasRemoteAfter = hasRemote || (await refExists(pi, cwd, remoteRef));
-
 	let add: ExecResult;
-	if (hasLocalAfter) {
+	if (hasLocal) {
 		// Reuse existing local branch.
 		add = await run(pi, ["worktree", "add", path, branch], cwd);
-	} else if (hasRemoteAfter) {
+	} else if (hasRemote) {
 		// Create local branch tracking origin/<branch>.
 		add = await run(
 			pi,
@@ -303,14 +347,13 @@ async function createWorktree(
 		);
 	} else {
 		// Brand-new branch off base (default: origin/main or main).
-		const baseBranch = base ?? (await detectDefaultBranch(pi, cwd));
-		// Prefer origin/<base> when available.
+		const baseBranch = base ?? (await detectDefaultBranch(pi, cwd, originUrl !== null));
+		// Prefer origin/<base> only when the origin remote still exists.
 		const originBase = `origin/${baseBranch}`;
-		const startPoint = (await refExists(
-			pi,
-			cwd,
-			`refs/remotes/${originBase}`,
-		))
+		const hasRemoteBase =
+			originUrl !== null &&
+			(await refExists(pi, cwd, `refs/remotes/${originBase}`));
+		const startPoint = hasRemoteBase
 			? originBase
 			: (await refExists(pi, cwd, `refs/heads/${baseBranch}`))
 				? baseBranch
@@ -318,7 +361,18 @@ async function createWorktree(
 
 		// Make sure base is fresh when it's a remote ref.
 		if (startPoint.startsWith("origin/")) {
-			await run(pi, ["fetch", "origin", baseBranch], cwd);
+			const fetchedBase = await run(
+				pi,
+				["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
+				cwd,
+			);
+			if (fetchedBase.code !== 0) {
+				ctx.ui.notify(
+					`Could not refresh ${startPoint}:\n${fetchedBase.stderr || fetchedBase.stdout}`,
+					"error",
+				);
+				return;
+			}
 		}
 
 		add = await run(
@@ -458,10 +512,24 @@ async function createFromPr(
 		return;
 	}
 
-	// gh pr checkout can move the current branch, so resolve and fetch the PR explicitly.
+	const originUrl = await getOriginUrl(pi, cwd);
+	if (!originUrl) {
+		ctx.ui.notify("The repository has no origin remote", "error");
+		return;
+	}
+
+	// Resolve PR metadata against the same origin from which Git fetches the PR ref.
 	const view = await pi.exec(
 		"gh",
-		["pr", "view", prNumber, "--json", "headRefName,number,title"],
+		[
+			"pr",
+			"view",
+			prNumber,
+			"--json",
+			"headRefName,headRefOid,number,title",
+			"--repo",
+			originUrl,
+		],
 		{ cwd },
 	);
 
@@ -475,6 +543,7 @@ async function createFromPr(
 
 	let data: {
 		headRefName?: string;
+		headRefOid?: string;
 		number?: number;
 		title?: string;
 	};
@@ -486,8 +555,8 @@ async function createFromPr(
 	}
 
 	const branch = data.headRefName;
-	if (!branch) {
-		ctx.ui.notify(`PR #${prNumber} has no head branch`, "error");
+	if (!branch || !data.headRefOid) {
+		ctx.ui.notify(`PR #${prNumber} has no resolvable head branch`, "error");
 		return;
 	}
 
@@ -511,8 +580,11 @@ async function createFromPr(
 	}
 
 	const fetchedHead = await resolveRef(pi, cwd, prRef);
-	if (!fetchedHead) {
-		ctx.ui.notify(`Could not resolve the fetched head for PR #${prNumber}`, "error");
+	if (!fetchedHead || fetchedHead !== data.headRefOid) {
+		ctx.ui.notify(
+			`Fetched head for PR #${prNumber} does not match GitHub's reported head`,
+			"error",
+		);
 		return;
 	}
 
