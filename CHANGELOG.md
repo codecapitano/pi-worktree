@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [1.2.2](https://github.com/codecapitano/pi-worktree/compare/pi-worktree-v1.2.1...pi-worktree-v1.2.2) - 2026-09-23
+
 ### Security
 
 - Refuse non-interactive and forced worktree removal.

@@ -22,7 +22,7 @@ Sibling folders next to the main repository use the form `<repo>-<branch-slug>`.
 The fork is not published to npm. Install it from GitHub:
 
 ```bash
-pi install git:github.com/codecapitano/pi-worktree
+pi install git:github.com/codecapitano/pi-worktree@pi-worktree-v1.2.2
 ```
 
 Already in a session?
