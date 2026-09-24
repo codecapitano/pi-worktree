@@ -48,7 +48,14 @@ Use `pi -e ./extensions/git-worktree.ts` when developing locally. The package is
 
 The default picker shortcut is `ctrl+alt+w`. Configure it with `/wt config shortcut <key|off>`. The command reloads Pi resources after a change. Use `/hotkeys` to inspect the active shortcuts.
 
-Worktrees are siblings of the main checkout, named `<repo>-<branch-slug>`:
+When the main checkout's parent has a `worktrees/` directory, worktrees are created at `worktrees/<repo>/<branch-slug>`:
+
+```text
+~/workspace/mobile/                         # main checkout
+~/workspace/worktrees/mobile/fix-login/     # worktree for fix/login
+```
+
+Otherwise, worktrees are siblings of the main checkout, named `<repo>-<branch-slug>`:
 
 ```text
 ~/foo/mobile/            # main checkout

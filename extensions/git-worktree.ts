@@ -17,7 +17,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { access, realpath, unlink } from "node:fs/promises";
+import { access, mkdir, realpath, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { getConfigPath, readConfigSync, saveShortcut, validateShortcut } from "../lib/config.ts";
 import { continueConversationInWorktree, preflightConversationSwitch } from "../lib/session-switch.ts";
@@ -183,10 +183,28 @@ function mainWorktreePath(worktrees: Worktree[]): string {
 	return worktrees[0]?.path ?? "";
 }
 
-function resolveWorktreePath(mainPath: string, branch: string): string {
+async function resolveWorktreePath(mainPath: string, branch: string): Promise<string> {
 	const repo = basename(mainPath);
 	const parent = dirname(mainPath);
+	const workspaceWorktrees = join(parent, "worktrees");
+	try {
+		if ((await stat(workspaceWorktrees)).isDirectory()) {
+			return join(workspaceWorktrees, repo, branchSlug(branch));
+		}
+	} catch {
+		// No workspace worktrees directory: retain the sibling layout.
+	}
 	return join(parent, `${repo}-${branchSlug(branch)}`);
+}
+
+async function ensureWorktreeParent(ctx: ExtensionCommandContext, path: string): Promise<boolean> {
+	try {
+		await mkdir(dirname(path), { recursive: true });
+		return true;
+	} catch (error) {
+		ctx.ui.notify(`Could not create worktree directory:\n${(error as Error).message}`, "error");
+		return false;
+	}
 }
 
 export function findWorktreeExact(
@@ -281,7 +299,7 @@ async function createWorktree(
 		return existing;
 	}
 
-	const path = resolveWorktreePath(mainPath, branch);
+	const path = await resolveWorktreePath(mainPath, branch);
 	const pathTaken = worktrees.find((w) => w.path === path);
 	if (pathTaken) {
 		ctx.ui.notify(
@@ -290,6 +308,7 @@ async function createWorktree(
 		);
 		return;
 	}
+	if (!(await ensureWorktreeParent(ctx, path))) return;
 
 	const localRef = `refs/heads/${branch}`;
 	const remoteRef = `refs/remotes/origin/${branch}`;
@@ -578,11 +597,12 @@ async function createFromPr(
 		return;
 	}
 
-	const path = resolveWorktreePath(mainPath, branch);
+	const path = await resolveWorktreePath(mainPath, branch);
 	if (worktrees.some((wt) => wt.path === path)) {
 		ctx.ui.notify(`Worktree path is already in use:\n${path}`, "error");
 		return;
 	}
+	if (!(await ensureWorktreeParent(ctx, path))) return;
 
 	const add = localHead
 		? await run(pi, ["worktree", "add", path, branch], cwd)
