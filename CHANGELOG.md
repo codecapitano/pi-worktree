@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [2.0.0](https://github.com/codecapitano/pi-worktree/compare/pi-worktree-v1.2.2...pi-worktree-v2.0.0) - 2026-09-24
+
 ### Added
 
 - Add the canonical `/wt` command and `/worktree` alias.
@@ -17,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `/worktree` now switches conversations instead of selecting a path to copy. `/worktree <branch>` switches to an existing worktree or asks before creating one.
 - Require Pi 0.84.2 or newer and Git 2.36 or newer.
 - Document the v2 commands, conversation forking, trust boundaries, requirements, and contributor checks.
 
