@@ -21,5 +21,5 @@ jobs:
 
       - name: Validate package
         run: |
-          node -e 'const p = require("./package.json"); if (p.name !== "@codecapitano/pi-worktree") process.exit(1); if (p.private !== true) process.exit(1); if (!p.pi?.extensions?.length) process.exit(1); if (!p.files?.includes("LICENSE") || !p.files?.includes("NOTICE.md")) process.exit(1); console.log("ok", p.name, p.version)'
+          node -e 'const p = require("./package.json"); if (p.name !== "@codecapitano/pi-worktree") process.exit(1); if (p.private !== true) process.exit(1); if (!p.pi?.extensions?.length) process.exit(1); if (!p.files?.includes("lib") || !p.files?.includes("LICENSE") || !p.files?.includes("NOTICE.md")) process.exit(1); console.log("ok", p.name, p.version)'
           npm pack --dry-run

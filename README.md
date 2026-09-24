@@ -2,77 +2,70 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Git worktree slash commands for [Pi](https://pi.dev).
+Switch Pi conversations between Git worktrees. This maintained fork of [`thisuxhq/pi-worktree`](https://github.com/thisuxhq/pi-worktree) preserves its provenance. See [NOTICE.md](NOTICE.md).
 
-Create, list, open, remove, and check out pull request worktrees without leaving the session.
+## Requirements
 
-This repository is a maintained fork of [`thisuxhq/pi-worktree`](https://github.com/thisuxhq/pi-worktree). See [NOTICE.md](NOTICE.md) for its provenance.
-
-## Layout
-
-```text
-~/AGI/mobile/               ← main checkout
-~/AGI/mobile-fix-login/     ← worktree for fix/login
-```
-
-Sibling folders next to the main repository use the form `<repo>-<branch-slug>`.
+- Pi `>=0.84.2`
+- Git `>=2.36`
+- A personal or global Pi installation. The extension must be installed for the Pi user, not only in a repository-local project.
+- GitHub CLI (`gh`) for pull request worktrees
 
 ## Install
 
-The fork is not published to npm. Install it from GitHub:
-
 ```bash
-pi install git:github.com/codecapitano/pi-worktree@pi-worktree-v1.2.2
+pi install git:github.com/codecapitano/pi-worktree
 ```
 
-Already in a session?
+Reload an existing Pi session after installation:
 
 ```text
 /reload
 ```
 
-Try the local extension during development:
+Use `pi -e ./extensions/git-worktree.ts` when developing locally. The package is private and this documentation does not claim a published v2 release.
 
-```bash
-pi -e ./extensions/git-worktree.ts
-```
+## Commands
 
-## Usage
+`/wt` is the canonical command. `/worktree` is an alias.
 
-| Command | What it does |
+| Command | Behavior |
 |---|---|
-| `/worktree` | List worktrees; pick one to copy its path |
-| `/worktree ls` | List worktrees |
-| `/worktree <branch>` | Create a worktree for a branch |
-| `/worktree add <branch>` | Create a worktree for a branch |
-| `/worktree open <branch>` | Show the path and copy it on macOS |
-| `/worktree rm <branch>` | Remove a worktree after confirmation; keep the branch |
-| `/worktree pr <number>` | Fetch a pull request with `gh` and create a worktree |
-| `/worktree help` | Show command help |
+| `/wt` | Open a filterable picker and switch to the selected worktree. Filter by branch, path, or commit. |
+| `/wt switch <branch-or-path>` | Switch using an exact branch or path. |
+| `/wt <branch-or-path>` | Switch on an exact match, or confirm before creating and switching. |
+| `/wt new <branch>` | Create a worktree, then switch to it. |
+| `/wt add <branch>` | Alias for `/wt new <branch>`. |
+| `/wt pr <number>` | Fetch a pull request, create its worktree, and ask before switching. The worktree is retained if you decline. |
+| `/wt open <branch-or-path>` | Show the path and copy it on macOS. |
+| `/wt path <branch-or-path>` | Show the path and copy it on macOS. |
+| `/wt ls` | List worktrees. |
+| `/wt rm <branch-or-path>` | Remove an exact, clean worktree after confirmation. The branch is kept. |
+| `/wt config shortcut` | Show the current shortcut. |
+| `/wt config shortcut <key>` | Save a shortcut. |
+| `/wt config shortcut off` | Disable the shortcut. |
+| `/wt help` | Show command help. |
 
-### Create behavior
+The default picker shortcut is `ctrl+alt+w`. Configure it with `/wt config shortcut <key|off>`. The command reloads Pi resources after a change. Use `/hotkeys` to inspect the active shortcuts.
 
-1. If the local branch exists, attach a worktree to it.
-2. Otherwise, if `origin/<branch>` exists, track it.
-3. Otherwise, create the branch from the default branch, such as `origin/main`, `main`, or `master`.
-
-If the branch already has a worktree, the command shows its existing path.
-
-### Removal safety
-
-- Refuses to remove the main worktree.
-- Refuses to remove locked worktrees.
-- Requires interactive confirmation.
-- Refuses to force-remove dirty worktrees.
-- Keeps the branch.
-
-### Pull request checkout
-
-This command requires an authenticated [GitHub CLI](https://cli.github.com/):
+Worktrees are siblings of the main checkout, named `<repo>-<branch-slug>`:
 
 ```text
-/worktree pr 42
+~/AGI/mobile/            # main checkout
+~/AGI/mobile-fix-login/  # worktree for fix/login
 ```
+
+## Switching conversations
+
+A switch is available only in interactive TUI mode when Pi is idle, has no queued messages, and the session is persisted. The active conversation must be the latest leaf. If you have branched the conversation, run `/fork` first.
+
+Switching forks the current conversation into the target worktree and opens the fork. The original conversation remains retained in its original worktree.
+
+## Pull request trust
+
+`/wt pr` asks for confirmation before continuing in fetched PR code. PR code, `AGENTS.md`, `CLAUDE.md`, and trusted `.pi` resources may load. Trust in the parent conversation or repository does not make PR content safe. Review the code and trust boundaries before confirming.
+
+Worktrees are directory and Git separation only. They are not a sandbox and do not restrict Pi, Git, `gh`, hooks, scripts, or other processes from using the user's operating-system permissions.
 
 ## Development
 
@@ -83,7 +76,7 @@ npm test
 pi -e ./extensions/git-worktree.ts
 ```
 
-The repository is intentionally private to package registries for now. Automated publication is disabled until the fork has been reviewed and tested.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the module layout and manual checks. Preserve the original attribution and fork provenance in [NOTICE.md](NOTICE.md).
 
 ## Links
 

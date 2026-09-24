@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import extension, {
 	branchSlug,
@@ -11,6 +12,8 @@ import extension, {
 	findWorktreeExact,
 	parseWorktrees,
 } from "../extensions/git-worktree.ts";
+
+process.env.PI_CODING_AGENT_DIR = await mkdtemp(join(tmpdir(), "pi-worktree-agent-test-"));
 
 const porcelain = `worktree /repo
 HEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -41,6 +44,16 @@ test("parses git worktree porcelain output", () => {
 	assert.equal(worktrees[2].locked, true);
 });
 
+test("parses NUL-delimited worktree paths containing newlines", () => {
+	const parsed = parseWorktrees(
+		"worktree /repo\0HEAD aaaa\0branch refs/heads/main\0\0" +
+			"worktree /repo-feature\nline\0HEAD bbbb\0branch refs/heads/feature/newline\0\0",
+	);
+	assert.equal(parsed.length, 2);
+	assert.equal(parsed[1].path, "/repo-feature\nline");
+	assert.equal(parsed[1].branch, "feature/newline");
+});
+
 test("exact lookup does not confuse branches with the same slug", () => {
 	assert.equal(branchSlug("feature/a"), branchSlug("feature-a"));
 	assert.equal(findWorktreeExact(worktrees, "feature/a")?.path, "/repo-feature-a");
@@ -48,17 +61,80 @@ test("exact lookup does not confuse branches with the same slug", () => {
 	assert.equal(findWorktree(worktrees, "FEATURE-A"), undefined);
 });
 
-function loadCommand(exec) {
-	let command;
-	extension({
+function loadExtension(exec) {
+	const commands = new Map();
+	const shortcuts = new Map();
+	const userMessages = [];
+	const handlers = new Map();
+	const api = {
 		exec,
-		registerCommand(_name, value) {
-			command = value;
+		registerCommand(name, value) {
+			commands.set(name, value);
 		},
-	});
+		registerShortcut(key, value) {
+			shortcuts.set(key, value);
+		},
+		on(event, handler) {
+			handlers.set(event, handler);
+		},
+		sendUserMessage(message, options) {
+			userMessages.push({ message, options });
+		},
+		getCommands() {
+			return [...commands].map(([name, command]) => ({
+				name,
+				description: command.description,
+				source: "extension",
+				sourceInfo: { path: "extensions/git-worktree.ts" },
+			}));
+		},
+	};
+	extension(api);
+	return { commands, shortcuts, userMessages, handlers, api };
+}
+
+function loadCommand(exec, name = "worktree") {
+	const loaded = loadExtension(exec);
+	const command = loaded.commands.get(name);
 	assert.ok(command);
 	return command;
 }
+
+test("registers /wt and /worktree with the same command behavior", () => {
+	const { commands } = loadExtension(async () => ({ code: 0, stdout: "", stderr: "" }));
+	assert.deepEqual([...commands.keys()], ["wt", "worktree"]);
+	assert.equal(commands.get("wt").handler, commands.get("worktree").handler);
+	assert.equal(commands.get("wt").getArgumentCompletions, commands.get("worktree").getArgumentCompletions);
+});
+
+test("registers the default shortcut and dispatches /wt through Pi", async () => {
+	const loaded = loadExtension(async () => ({ code: 0, stdout: "", stderr: "" }));
+	const shortcut = loaded.shortcuts.get("ctrl+alt+w");
+	assert.ok(shortcut);
+	await shortcut.handler({
+		mode: "tui",
+		isIdle: () => true,
+		hasPendingMessages: () => false,
+		ui: { notify() {} },
+	});
+	assert.deepEqual(loaded.userMessages, [{
+		message: "/wt",
+		options: { expandPromptTemplates: true },
+	}]);
+});
+
+test("reports an incompatible Pi shortcut host", async () => {
+	const loaded = loadExtension(async () => ({ code: 0, stdout: "", stderr: "" }));
+	delete loaded.api.sendUserMessage;
+	const notifications = [];
+	await loaded.shortcuts.get("ctrl+alt+w").handler({
+		mode: "tui",
+		isIdle: () => true,
+		hasPendingMessages: () => false,
+		ui: { notify: (message, level) => notifications.push({ message, level }) },
+	});
+	assert.match(notifications.at(-1).message, /upgrade to Pi 0\.84\.2/);
+});
 
 function context(overrides = {}) {
 	const notifications = [];
@@ -68,6 +144,18 @@ function context(overrides = {}) {
 		confirmations,
 		ctx: {
 			hasUI: true,
+			mode: "tui",
+			cwd: "/repo",
+			isIdle: () => true,
+			hasPendingMessages: () => false,
+			sessionManager: {
+				getSessionFile: () => fileURLToPath(import.meta.url),
+				getEntries: () => [{ id: "latest" }],
+				getLeafId: () => "latest",
+				getSessionDir: () => "/sessions",
+				usesDefaultSessionDir: () => true,
+			},
+			switchSession: async () => ({ cancelled: false }),
 			ui: {
 				notify(message, level) {
 					notifications.push({ message, level });
@@ -94,6 +182,63 @@ function repoPrelude(args) {
 	}
 	return null;
 }
+
+test("refuses switching outside TUI mode before changing Git state", async () => {
+	const calls = [];
+	const command = loadCommand(async (_program, args) => {
+		calls.push(args);
+		return repoPrelude(args) ?? { code: 0, stdout: "", stderr: "" };
+	}, "wt");
+	const state = context({ mode: "json" });
+	await command.handler("new feature/no-tui", state.ctx);
+	assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "add"), false);
+	assert.match(state.notifications.at(-1).message, /interactive Pi TUI mode/);
+});
+
+test("refuses creation before changing Git when the session is not persisted", async () => {
+	const calls = [];
+	const command = loadCommand(async (_program, args) => {
+		calls.push(args);
+		return repoPrelude(args) ?? { code: 0, stdout: "", stderr: "" };
+	}, "wt");
+	const state = context({
+		sessionManager: {
+			getSessionFile: () => undefined,
+			getEntries: () => [],
+			getLeafId: () => null,
+			getSessionDir: () => "/sessions",
+		},
+	});
+	await command.handler("new feature/no-session", state.ctx);
+	assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "add"), false);
+	assert.match(state.notifications.at(-1).message, /persisted session/);
+});
+
+test("reports a Pi host without session replacement support", async () => {
+	const command = loadCommand(async (_program, args) => {
+		const prelude = repoPrelude(args);
+		if (prelude) return prelude;
+		if (args[0] === "worktree" && args[1] === "list") return { code: 0, stdout: porcelain, stderr: "" };
+		throw new Error(`unexpected call: ${args.join(" ")}`);
+	}, "wt");
+	const state = context({ cwd: "/repo", switchSession: undefined });
+	await command.handler("switch feature/a", state.ctx);
+	assert.match(state.notifications.at(-1).message, /upgrade to Pi 0\.84\.2/);
+});
+
+test("reports the Git requirement when porcelain-z listing fails", async () => {
+	const command = loadCommand(async (_program, args) => {
+		const prelude = repoPrelude(args);
+		if (prelude) return prelude;
+		if (args[0] === "worktree" && args[1] === "list") {
+			return { code: 129, stdout: "", stderr: "unknown option z" };
+		}
+		throw new Error(`unexpected call: ${args.join(" ")}`);
+	}, "wt");
+	const state = context();
+	await command.handler("ls", state.ctx);
+	assert.match(state.notifications.at(-1).message, /requires Git 2\.36 or newer/);
+});
 
 test("removal requires an interactive context", async () => {
 	const calls = [];
@@ -172,7 +317,7 @@ test("creates and safely removes a real temporary worktree while retaining its b
 			if (program === "bash") return { code: 1, stdout: "", stderr: "clipboard unavailable" };
 			return execute(program, args, { cwd: options.cwd ?? repo });
 		});
-		const state = context();
+		const state = context({ cwd: repo });
 		await command.handler("add feature/test", state.ctx);
 
 		const listed = await execute("git", ["worktree", "list", "--porcelain"], { cwd: repo });
@@ -226,6 +371,7 @@ test("no-origin repository ignores stale origin base refs", async () => {
 
 test("PR checkout creates a branch from the verified fetched ref", async () => {
 	const calls = [];
+	let added = false;
 	const command = loadCommand(async (program, args) => {
 		calls.push({ program, args });
 		const prelude = repoPrelude(args);
@@ -247,12 +393,19 @@ test("PR checkout creates a branch from the verified fetched ref", async () => {
 			return { code: 0, stdout: "bbbb", stderr: "" };
 		}
 		if (args[0] === "worktree" && args[1] === "list") {
-			return { code: 0, stdout: `worktree /repo\nHEAD aaaa\nbranch refs/heads/main\n`, stderr: "" };
+			return {
+				code: 0,
+				stdout: added
+					? `worktree /repo\nHEAD aaaa\nbranch refs/heads/main\n\nworktree /repo-feature-a\nHEAD bbbb\nbranch refs/heads/feature/a\n`
+					: `worktree /repo\nHEAD aaaa\nbranch refs/heads/main\n`,
+				stderr: "",
+			};
 		}
 		if (args[0] === "rev-parse" && args[2] === "refs/heads/feature/a") {
 			return { code: 1, stdout: "", stderr: "unknown revision" };
 		}
 		if (args[0] === "worktree" && args[1] === "add") {
+			added = true;
 			return { code: 0, stdout: "", stderr: "" };
 		}
 		throw new Error(`unexpected call: ${program} ${args.join(" ")}`);
@@ -272,7 +425,21 @@ test("PR checkout creates a branch from the verified fetched ref", async () => {
 		"/repo-feature-a",
 		"refs/pi-worktree/pr/42",
 	]);
-	assert.match(state.notifications.at(-1).message, /PR #42 Feature/);
+	assert.ok(state.notifications.some(({ message }) => /PR #42 Feature/.test(message)));
+	assert.equal(state.confirmations.length, 1);
+	assert.match(state.confirmations[0].message, /AGENTS\.md/);
+	assert.match(state.confirmations[0].message, /trusted \.pi resources/);
+});
+
+test("completes registered worktree branches for switch commands", async () => {
+	const command = loadCommand(async (_program, args) => {
+		if (args[0] === "worktree" && args[1] === "list") {
+			return { code: 0, stdout: porcelain, stderr: "" };
+		}
+		throw new Error(`unexpected call: ${args.join(" ")}`);
+	}, "wt");
+	const completions = await command.getArgumentCompletions("switch feature/");
+	assert.deepEqual(completions.map((item) => item.label), ["feature/a"]);
 });
 
 test("remote branch fetch failure does not create a branch from the default base", async () => {

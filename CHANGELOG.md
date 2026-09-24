@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Add the canonical `/wt` command and `/worktree` alias.
+- Add filterable worktree picking and conversation switching by forking the current conversation while retaining the original.
+- Add `/wt switch`, `new`, `add`, `pr`, `open`, `path`, `ls`, `rm`, and shortcut configuration.
+- Add the default `ctrl+alt+w` picker shortcut with persisted configuration.
+- Add an explicit trust confirmation before switching into pull request worktrees.
+
+### Changed
+
+- Require Pi 0.84.2 or newer and Git 2.36 or newer.
+- Document the v2 commands, conversation forking, trust boundaries, requirements, and contributor checks.
+
 ## [1.2.2](https://github.com/codecapitano/pi-worktree/compare/pi-worktree-v1.2.1...pi-worktree-v1.2.2) - 2026-09-23
 
 ### Security

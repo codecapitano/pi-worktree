@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-The fork has not published a supported release. Security fixes land on `main` while the initial review is in progress.
+The v2 behavior is implemented on `main`. This repository has not claimed a published v2 release. Security fixes land on `main` while review continues.
 
 ## Report a vulnerability
 
@@ -17,10 +17,15 @@ Use [GitHub private vulnerability reporting](https://github.com/codecapitano/pi-
 
 ## Scope
 
-This Pi extension runs `git` and `gh` with the user's operating-system permissions. Relevant reports include:
+This extension invokes `git`, and invokes `gh` for pull requests, with the user's operating-system permissions. Worktrees are not sandboxes. A worktree can contain untrusted PR code and instruction files, and parent repository or conversation trust does not automatically make that content trusted.
+
+Relevant reports include:
 
 - unsafe command construction or argument injection;
 - worktree removal that can destroy data;
-- ambiguous or unsafe path selection;
+- ambiguous, unsafe, or out-of-scope path selection;
 - path traversal outside the intended worktree location;
+- unsafe PR fetch or trust handling;
+- session switching that bypasses persisted-session, idle, latest-leaf, or confirmation safeguards;
+- shortcut configuration that writes outside the configured Pi agent directory;
 - supply-chain issues in the repository or packed package.
