@@ -59,11 +59,11 @@ Worktrees are siblings of the main checkout, named `<repo>-<branch-slug>`:
 
 A switch is available only in interactive TUI mode when Pi is idle, has no queued messages, and the session is persisted. The active conversation must be the latest leaf. If you have branched the conversation, run `/fork` first.
 
-Switching forks the current conversation into the target worktree and opens the fork. The original conversation remains retained in its original worktree.
+Every switch, including picker and shortcut selections, asks you to confirm the target before loading it. Switching forks the current conversation into the target worktree and opens the fork. The original conversation remains retained in its original worktree.
 
 ## Pull request trust
 
-`/wt pr` asks for confirmation before continuing in fetched PR code. PR code, `AGENTS.md`, `CLAUDE.md`, and trusted `.pi` resources may load. Trust in the parent conversation or repository does not make PR content safe. Review the code and trust boundaries before confirming.
+`/wt pr` and every other way of entering a worktree ask for confirmation before continuing. PR code, `AGENTS.md`, `CLAUDE.md`, and trusted `.pi` resources may load. Trust in the parent conversation or repository does not make PR content safe. Review the code and trust boundaries before confirming.
 
 Worktrees are directory and Git separation only. They are not a sandbox and do not restrict Pi, Git, `gh`, hooks, scripts, or other processes from using the user's operating-system permissions.
 

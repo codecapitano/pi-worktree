@@ -226,6 +226,39 @@ test("reports a Pi host without session replacement support", async () => {
 	assert.match(state.notifications.at(-1).message, /upgrade to Pi 0\.84\.2/);
 });
 
+test("exact and bare switch commands warn before entering an existing worktree", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-worktree-trust-test-"));
+	const repo = join(root, "repo");
+	const target = join(root, "repo-pr-42");
+	await mkdir(repo);
+	await mkdir(target);
+	try {
+		const command = loadCommand(async (_program, args) => {
+			if (args[0] === "rev-parse" && args[1] === "--is-inside-work-tree") return { code: 0, stdout: "true", stderr: "" };
+			if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { code: 0, stdout: repo, stderr: "" };
+			if (args[0] === "worktree" && args[1] === "list") return { code: 0, stdout: `worktree ${repo}\nHEAD aaaa\nbranch refs/heads/main\n\nworktree ${target}\nHEAD bbbb\nbranch refs/heads/pr-42\n`, stderr: "" };
+			throw new Error(`unexpected call: ${args.join(" ")}`);
+		}, "wt");
+		for (const args of ["switch pr-42", "pr-42"]) {
+			let switched = false;
+			const state = context({
+				cwd: repo,
+				switchSession: async () => { switched = true; return { cancelled: false }; },
+			});
+			state.ctx.ui.confirm = async (title, message) => {
+				state.confirmations.push({ title, message });
+				return false;
+			};
+			await command.handler(args, state.ctx);
+			assert.equal(switched, false, args);
+			assert.equal(state.confirmations.length, 1, `${args}: ${JSON.stringify(state.notifications)}`);
+			assert.match(state.confirmations[0].message, /AGENTS\.md/);
+		}
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("reports the Git requirement when porcelain-z listing fails", async () => {
 	const command = loadCommand(async (_program, args) => {
 		const prelude = repoPrelude(args);
@@ -369,13 +402,19 @@ test("no-origin repository ignores stale origin base refs", async () => {
 	assert.deepEqual(add, ["worktree", "add", "-b", "feature/new", "/repo-feature-new", "main"]);
 });
 
-test("PR checkout creates a branch from the verified fetched ref", async () => {
+test("PR checkout creates a branch from the verified fetched ref", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-worktree-pr-test-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const repo = join(root, "repo");
+	const target = join(root, "repo-feature-a");
+	await mkdir(repo);
+	await mkdir(target);
 	const calls = [];
 	let added = false;
 	const command = loadCommand(async (program, args) => {
 		calls.push({ program, args });
-		const prelude = repoPrelude(args);
-		if (prelude) return prelude;
+		if (args[0] === "rev-parse" && args[1] === "--is-inside-work-tree") return { code: 0, stdout: "true", stderr: "" };
+		if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { code: 0, stdout: repo, stderr: "" };
 		if (program === "gh") {
 			return {
 				code: 0,
@@ -396,8 +435,8 @@ test("PR checkout creates a branch from the verified fetched ref", async () => {
 			return {
 				code: 0,
 				stdout: added
-					? `worktree /repo\nHEAD aaaa\nbranch refs/heads/main\n\nworktree /repo-feature-a\nHEAD bbbb\nbranch refs/heads/feature/a\n`
-					: `worktree /repo\nHEAD aaaa\nbranch refs/heads/main\n`,
+					? `worktree ${repo}\nHEAD aaaa\nbranch refs/heads/main\n\nworktree ${target}\nHEAD bbbb\nbranch refs/heads/feature/a\n`
+					: `worktree ${repo}\nHEAD aaaa\nbranch refs/heads/main\n`,
 				stderr: "",
 			};
 		}
@@ -410,7 +449,11 @@ test("PR checkout creates a branch from the verified fetched ref", async () => {
 		}
 		throw new Error(`unexpected call: ${program} ${args.join(" ")}`);
 	});
-	const state = context();
+	const state = context({ cwd: repo });
+	state.ctx.ui.confirm = async (title, message) => {
+		state.confirmations.push({ title, message });
+		return false;
+	};
 
 	await command.handler("pr 42", state.ctx);
 
@@ -422,10 +465,11 @@ test("PR checkout creates a branch from the verified fetched ref", async () => {
 		"add",
 		"-b",
 		"feature/a",
-		"/repo-feature-a",
+		target,
 		"refs/pi-worktree/pr/42",
 	]);
 	assert.ok(state.notifications.some(({ message }) => /PR #42 Feature/.test(message)));
+	assert.ok(state.notifications.some(({ message }) => /Worktree retained at .*repo-feature-a$/.test(message)));
 	assert.equal(state.confirmations.length, 1);
 	assert.match(state.confirmations[0].message, /AGENTS\.md/);
 	assert.match(state.confirmations[0].message, /trusted \.pi resources/);

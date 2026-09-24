@@ -657,6 +657,10 @@ async function switchToWorktree(
 			ctx.ui.notify("This worktree is already active", "info");
 			return;
 		}
+		if (!(await ctx.ui.confirm("Continue in worktree?", `${target}\n\nWorktree code, AGENTS.md, CLAUDE.md, and trusted .pi resources may load. Review the target before continuing.`))) {
+			ctx.ui.notify(`Worktree retained at ${target}`, "info");
+			return;
+		}
 		const codingAgent = await import("@earendil-works/pi-coding-agent");
 		await continueConversationInWorktree(ctx as any, target, {
 			exists: async (path) => access(path).then(() => true, () => false),
@@ -825,10 +829,7 @@ export default function (pi: ExtensionAPI) {
 			if (!rest) return ctx.ui.notify("Usage: /wt pr <number>", "error");
 			if (!(await canStartSwitch(ctx))) return;
 			const wt = await createFromPr(pi, ctx, cwd, rest);
-			if (!wt || !ctx.hasUI) return;
-			const approved = await ctx.ui.confirm("Continue in PR worktree?", `${wt.path}\n\nPR code, AGENTS.md, CLAUDE.md, and trusted .pi resources may load.`);
-			if (approved) await switchToWorktree(pi, ctx, cwd, wt);
-			else ctx.ui.notify(`PR worktree retained at ${wt.path}`, "info");
+			if (wt) await switchToWorktree(pi, ctx, cwd, wt);
 			return;
 		}
 		if (cmd === "bare") {

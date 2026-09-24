@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add filterable worktree picking and conversation switching by forking the current conversation while retaining the original.
 - Add `/wt switch`, `new`, `add`, `pr`, `open`, `path`, `ls`, `rm`, and shortcut configuration.
 - Add the default `ctrl+alt+w` picker shortcut with persisted configuration.
-- Add an explicit trust confirmation before switching into pull request worktrees.
+- Require a trust confirmation for every worktree switch, including previously created pull request worktrees.
 
 ### Changed
 
