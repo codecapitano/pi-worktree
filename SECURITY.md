@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-The v2 behavior is implemented on `main`. This repository has not claimed a published v2 release. Security fixes land on `main` while review continues.
+Version 2.0.0 is the current supported release. Security fixes land on `main` and ship in tagged releases.
 
 ## Report a vulnerability
 
