@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -367,7 +367,7 @@ test("creates and safely removes a real temporary worktree while retaining its b
 	}
 });
 
-test("no-origin repository ignores stale origin base refs", async () => {
+test("uses the sibling worktree layout without a workspace worktrees directory", async () => {
 	const calls = [];
 	const command = loadCommand(async (_program, args) => {
 		calls.push(args);
@@ -402,13 +402,59 @@ test("no-origin repository ignores stale origin base refs", async () => {
 	assert.deepEqual(add, ["worktree", "add", "-b", "feature/new", "/repo-feature-new", "main"]);
 });
 
+test("creates new worktrees in an existing workspace worktrees directory", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-worktree-workspace-test-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const repo = join(root, "repo");
+	const targetParent = join(root, "worktrees", "repo");
+	const target = join(targetParent, "feature-new");
+	await mkdir(repo, { recursive: true });
+	await mkdir(join(root, "worktrees"));
+	const calls = [];
+	let added = false;
+	const command = loadCommand(async (_program, args) => {
+		calls.push(args);
+		if (args[0] === "rev-parse" && args[1] === "--is-inside-work-tree") return { code: 0, stdout: "true", stderr: "" };
+		if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { code: 0, stdout: repo, stderr: "" };
+		if (args[0] === "check-ref-format") return { code: 0, stdout: "feature/new", stderr: "" };
+		if (args[0] === "worktree" && args[1] === "list") {
+			return {
+				code: 0,
+				stdout: added
+					? `worktree ${repo}\nHEAD aaaa\nbranch refs/heads/main\n\nworktree ${target}\nHEAD bbbb\nbranch refs/heads/feature/new\n`
+					: `worktree ${repo}\nHEAD aaaa\nbranch refs/heads/main\n`,
+				stderr: "",
+			};
+		}
+		if (args[0] === "remote" && args[1] === "get-url") return { code: 2, stdout: "", stderr: "No such remote 'origin'" };
+		if (args[0] === "show-ref" && args.at(-1) === "refs/heads/main") return { code: 0, stdout: "", stderr: "" };
+		if (args[0] === "show-ref") return { code: 1, stdout: "", stderr: "" };
+		if (args[0] === "worktree" && args[1] === "add") {
+			added = true;
+			await mkdir(target, { recursive: true });
+			return { code: 0, stdout: "", stderr: "" };
+		}
+		if (_program === "bash") return { code: 1, stdout: "", stderr: "clipboard unavailable" };
+		throw new Error(`unexpected call: ${args.join(" ")}`);
+	});
+	const state = context({ cwd: repo });
+	state.ctx.ui.confirm = async () => false;
+
+	await command.handler("new feature/new", state.ctx);
+
+	const add = calls.find((args) => args[0] === "worktree" && args[1] === "add");
+	assert.deepEqual(add, ["worktree", "add", "-b", "feature/new", target, "main"]);
+	await assert.doesNotReject(() => access(targetParent));
+});
+
 test("PR checkout creates a branch from the verified fetched ref", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-worktree-pr-test-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const repo = join(root, "repo");
-	const target = join(root, "repo-feature-a");
+	const targetParent = join(root, "worktrees", "repo");
+	const target = join(targetParent, "feature-a");
 	await mkdir(repo);
-	await mkdir(target);
+	await mkdir(join(root, "worktrees"));
 	const calls = [];
 	let added = false;
 	const command = loadCommand(async (program, args) => {
@@ -445,6 +491,7 @@ test("PR checkout creates a branch from the verified fetched ref", async (t) => 
 		}
 		if (args[0] === "worktree" && args[1] === "add") {
 			added = true;
+			await mkdir(target, { recursive: true });
 			return { code: 0, stdout: "", stderr: "" };
 		}
 		throw new Error(`unexpected call: ${program} ${args.join(" ")}`);
@@ -469,7 +516,8 @@ test("PR checkout creates a branch from the verified fetched ref", async (t) => 
 		"refs/pi-worktree/pr/42",
 	]);
 	assert.ok(state.notifications.some(({ message }) => /PR #42 Feature/.test(message)));
-	assert.ok(state.notifications.some(({ message }) => /Worktree retained at .*repo-feature-a$/.test(message)));
+	assert.ok(state.notifications.some(({ message }) => /Worktree retained at .*worktrees\/repo\/feature-a$/.test(message)));
+	await assert.doesNotReject(() => access(targetParent));
 	assert.equal(state.confirmations.length, 1);
 	assert.match(state.confirmations[0].message, /AGENTS\.md/);
 	assert.match(state.confirmations[0].message, /trusted \.pi resources/);
