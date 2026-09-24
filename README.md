@@ -51,8 +51,8 @@ The default picker shortcut is `ctrl+alt+w`. Configure it with `/wt config short
 Worktrees are siblings of the main checkout, named `<repo>-<branch-slug>`:
 
 ```text
-~/AGI/mobile/            # main checkout
-~/AGI/mobile-fix-login/  # worktree for fix/login
+~/foo/mobile/            # main checkout
+~/foo/mobile-fix-login/  # worktree for fix/login
 ```
 
 ## Switching conversations
