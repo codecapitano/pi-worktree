@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [2.0.1](https://github.com/codecapitano/pi-worktree/compare/pi-worktree-v2.0.0...pi-worktree-v2.0.1) - 2026-09-24
+
+### Fixed
+
+- Create worktrees under `worktrees/<repo>/<branch-slug>` when that directory exists beside the main checkout; retain the sibling layout elsewhere.
+
 ## [2.0.0](https://github.com/codecapitano/pi-worktree/compare/pi-worktree-v1.2.2...pi-worktree-v2.0.0) - 2026-09-24
 
 ### Added

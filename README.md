@@ -14,7 +14,7 @@ Switch Pi conversations between Git worktrees. This maintained fork of [`thisuxh
 ## Install
 
 ```bash
-pi install git:github.com/codecapitano/pi-worktree@pi-worktree-v2.0.0
+pi install git:github.com/codecapitano/pi-worktree@pi-worktree-v2.0.1
 ```
 
 Run the same install command to replace an older pinned version. Reload an existing Pi session after installation:

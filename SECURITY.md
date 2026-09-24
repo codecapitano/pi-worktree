@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Version 2.0.0 is the current supported release. Security fixes land on `main` and ship in tagged releases.
+Version 2.0.1 is the current supported release. Security fixes land on `main` and ship in tagged releases.
 
 ## Report a vulnerability
 

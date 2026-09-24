@@ -1,6 +1,6 @@
 {
   "name": "@codecapitano/pi-worktree",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "description": "Switch Pi conversations between Git worktrees with /wt",
   "license": "MIT",
