@@ -1,14 +1,9 @@
 /**
  * Git Worktree Extension
  *
- * Slash commands:
- *   /worktree                      list worktrees (interactive pick)
- *   /worktree ls                   list worktrees
- *   /worktree <branch>             create worktree for branch
- *   /worktree add <branch>         same as above
- *   /worktree open <branch>        show path (+ copy to clipboard on macOS)
- *   /worktree rm <branch>          remove worktree (confirms first)
- *   /worktree pr <number>          fetch PR branch via gh, create worktree
+ * Canonical command: /wt. /worktree is the long alias.
+ * Pick or switch worktrees, create branch and PR worktrees, show paths,
+ * list and safely remove checkouts, and configure the picker shortcut.
  *
  * Layout:
  *   ~/AGI/mobile/                  ← main checkout
@@ -22,7 +17,11 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { access, realpath, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { getConfigPath, readConfigSync, saveShortcut, validateShortcut } from "../lib/config.ts";
+import { continueConversationInWorktree, preflightConversationSwitch } from "../lib/session-switch.ts";
+import { showWorktreePicker } from "../lib/worktree-picker.ts";
 
 type ExecResult = { code: number; stdout: string; stderr: string };
 
@@ -52,12 +51,12 @@ async function ensureRepo(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 ): Promise<string | null> {
-	const inside = await run(pi, ["rev-parse", "--is-inside-work-tree"]);
+	const inside = await run(pi, ["rev-parse", "--is-inside-work-tree"], ctx.cwd);
 	if (inside.code !== 0 || inside.stdout !== "true") {
 		ctx.ui.notify("Not inside a git repository", "error");
 		return null;
 	}
-	const top = await run(pi, ["rev-parse", "--show-toplevel"]);
+	const top = await run(pi, ["rev-parse", "--show-toplevel"], ctx.cwd);
 	if (top.code !== 0 || !top.stdout) {
 		ctx.ui.notify("Could not resolve repo root", "error");
 		return null;
@@ -83,7 +82,8 @@ export function parseWorktrees(porcelain: string): Worktree[] {
 		current = null;
 	};
 
-	for (const line of porcelain.split("\n")) {
+	const delimiter = porcelain.includes("\0") ? "\0" : "\n";
+	for (const line of porcelain.split(delimiter)) {
 		if (line.length === 0) {
 			push();
 			continue;
@@ -110,8 +110,10 @@ export function parseWorktrees(porcelain: string): Worktree[] {
 }
 
 async function listWorktrees(pi: ExtensionAPI, cwd: string): Promise<Worktree[]> {
-	const result = await run(pi, ["worktree", "list", "--porcelain"], cwd);
-	if (result.code !== 0) return [];
+	const result = await run(pi, ["worktree", "list", "--porcelain", "-z"], cwd);
+	if (result.code !== 0) {
+		throw new Error(`Could not list Git worktrees. pi-worktree requires Git 2.36 or newer.\n${result.stderr || result.stdout}`);
+	}
 	return parseWorktrees(result.stdout);
 }
 
@@ -264,7 +266,7 @@ async function createWorktree(
 	cwd: string,
 	branch: string,
 	base?: string,
-): Promise<void> {
+): Promise<Worktree | undefined> {
 	if (!(await isValidBranch(pi, cwd, branch))) {
 		ctx.ui.notify(`Invalid branch name: ${branch}`, "error");
 		return;
@@ -275,12 +277,8 @@ async function createWorktree(
 
 	const existing = findWorktreeExact(worktrees, branch);
 	if (existing) {
-		const copied = await copyToClipboard(pi, existing.path);
-		ctx.ui.notify(
-			`Already exists\n${existing.branch ?? "detached"}  →  ${existing.path}${copied ? "\n(path copied)" : ""}\n\nNext: cd ${existing.path} && pi`,
-			"info",
-		);
-		return;
+		ctx.ui.notify(`Using existing worktree\n${existing.branch ?? "detached"}  →  ${existing.path}`, "info");
+		return existing;
 	}
 
 	const path = resolveWorktreePath(mainPath, branch);
@@ -390,11 +388,8 @@ async function createWorktree(
 		return;
 	}
 
-	const copied = await copyToClipboard(pi, path);
-	ctx.ui.notify(
-		`Created ${branch}\n→ ${path}${copied ? "\n(path copied)" : ""}\n\nNext: cd ${path} && pi`,
-		"info",
-	);
+	ctx.ui.notify(`Created ${branch}\n→ ${path}`, "info");
+	return findWorktreeExact(await listWorktrees(pi, cwd), branch);
 }
 
 async function openWorktree(
@@ -407,7 +402,7 @@ async function openWorktree(
 	const wt = findWorktree(worktrees, query);
 	if (!wt) {
 		ctx.ui.notify(
-			`No worktree matching "${query}"\nTry /worktree ls`,
+			`No worktree matching "${query}"\nTry /wt ls`,
 			"error",
 		);
 		return;
@@ -430,7 +425,7 @@ async function removeWorktree(
 	const wt = findWorktreeExact(worktrees, query);
 
 	if (!wt) {
-		ctx.ui.notify(`No exact worktree matching "${query}". Use /worktree ls to copy the exact branch or path.`, "error");
+		ctx.ui.notify(`No exact worktree matching "${query}". Use /wt ls to copy the exact branch or path.`, "error");
 		return;
 	}
 	if (wt.path === mainPath) {
@@ -471,44 +466,14 @@ async function removeWorktree(
 	);
 }
 
-async function listAndMaybeOpen(
-	pi: ExtensionAPI,
-	ctx: ExtensionCommandContext,
-	cwd: string,
-): Promise<void> {
-	const worktrees = await listWorktrees(pi, cwd);
-	if (worktrees.length === 0) {
-		ctx.ui.notify("No worktrees found", "info");
-		return;
-	}
-	const mainPath = mainWorktreePath(worktrees);
-	const lines = worktrees.map((w) => formatWt(w, mainPath));
-
-	if (!ctx.hasUI) {
-		ctx.ui.notify(lines.join("\n"), "info");
-		return;
-	}
-
-	const choice = await ctx.ui.select("Worktrees (select to copy path)", lines);
-	if (!choice) return;
-	const picked = worktrees.find((w) => formatWt(w, mainPath) === choice);
-	if (!picked) return;
-
-	const copied = await copyToClipboard(pi, picked.path);
-	ctx.ui.notify(
-		`${picked.branch ?? "detached"}  →  ${picked.path}${copied ? "\n(path copied)" : ""}\n\nNext: cd ${picked.path} && pi`,
-		"info",
-	);
-}
-
 async function createFromPr(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 	cwd: string,
 	prNumber: string,
-): Promise<void> {
+): Promise<Worktree | undefined> {
 	if (!/^\d+$/.test(prNumber)) {
-		ctx.ui.notify(`Usage: /worktree pr <number>\nGot: ${prNumber}`, "error");
+		ctx.ui.notify(`Usage: /wt pr <number>\nGot: ${prNumber}`, "error");
 		return;
 	}
 
@@ -599,8 +564,8 @@ async function createFromPr(
 			);
 			return;
 		}
-		await openWorktree(pi, ctx, cwd, branch);
-		return;
+		ctx.ui.notify(`Using existing PR worktree\n${branch}  →  ${existing.path}`, "info");
+		return existing;
 	}
 
 	const localRef = `refs/heads/${branch}`;
@@ -630,103 +595,290 @@ async function createFromPr(
 		return;
 	}
 
-	const copied = await copyToClipboard(pi, path);
-	ctx.ui.notify(
-		`PR #${prNumber} ${data.title ?? ""}\nCreated ${branch}\n→ ${path}${copied ? "\n(path copied)" : ""}\n\nNext: cd ${path} && pi`,
-		"info",
+	ctx.ui.notify(`PR #${prNumber} ${data.title ?? ""}\nCreated ${branch}\n→ ${path}`, "info");
+	return findWorktreeExact(await listWorktrees(pi, cwd), branch);
+}
+
+let switchInProgress = false;
+
+async function canonicalPath(path: string): Promise<string | null> {
+	try { return await realpath(path); } catch { return null; }
+}
+
+function supportsSwitchMode(ctx: ExtensionCommandContext): boolean {
+	if (!ctx.hasUI || ctx.mode !== "tui") {
+		ctx.ui.notify("Worktree switching requires interactive Pi TUI mode", "error");
+		return false;
+	}
+	return true;
+}
+
+function supportsSwitching(ctx: ExtensionCommandContext): boolean {
+	if (!supportsSwitchMode(ctx)) return false;
+	if (typeof ctx.switchSession !== "function") {
+		ctx.ui.notify("This Pi version cannot replace sessions; upgrade to Pi 0.84.2 or newer", "error");
+		return false;
+	}
+	return true;
+}
+
+async function canStartSwitch(ctx: ExtensionCommandContext): Promise<boolean> {
+	return supportsSwitching(ctx) && preflightConversationSwitch(
+		ctx as any,
+		(path) => access(path).then(() => true, () => false),
 	);
+}
+
+async function switchToWorktree(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	repoRoot: string,
+	worktree: Worktree,
+): Promise<void> {
+	if (!supportsSwitching(ctx)) return;
+	if (switchInProgress) {
+		ctx.ui.notify("A worktree switch is already in progress", "warning");
+		return;
+	}
+	if (worktree.bare || worktree.prunable) {
+		ctx.ui.notify("This worktree is not available for switching", "error");
+		return;
+	}
+	const target = await canonicalPath(worktree.path);
+	if (!target) {
+		ctx.ui.notify("The selected worktree no longer exists", "error");
+		return;
+	}
+
+	switchInProgress = true;
+	try {
+		const current = await canonicalPath(ctx.cwd);
+		if (current === target) {
+			ctx.ui.notify("This worktree is already active", "info");
+			return;
+		}
+		if (!(await ctx.ui.confirm("Continue in worktree?", `${target}\n\nWorktree code, AGENTS.md, CLAUDE.md, and trusted .pi resources may load. Review the target before continuing.`))) {
+			ctx.ui.notify(`Worktree retained at ${target}`, "info");
+			return;
+		}
+		const codingAgent = await import("@earendil-works/pi-coding-agent");
+		await continueConversationInWorktree(ctx as any, target, {
+			exists: async (path) => access(path).then(() => true, () => false),
+			usesDefaultSessionDir: () => {
+				const manager = ctx.sessionManager as any;
+				return typeof manager.usesDefaultSessionDir === "function" && manager.usesDefaultSessionDir();
+			},
+			revalidate: async (expected) => {
+				const listed = await listWorktrees(pi, repoRoot);
+				for (const candidate of listed) {
+					if (candidate.bare || candidate.prunable) continue;
+					if (await canonicalPath(candidate.path) === expected) return true;
+				}
+				return false;
+			},
+			forkSession: async (source, targetCwd, sessionDir) => {
+				const manager = codingAgent.SessionManager.forkFrom(source, targetCwd, sessionDir);
+				const path = manager.getSessionFile();
+				if (!path) throw new Error("Pi did not create a persisted target session");
+				return { path };
+			},
+			removeSession: async (path) => unlink(path),
+		});
+	} finally {
+		switchInProgress = false;
+	}
 }
 
 function parseArgs(raw: string): { cmd: string; rest: string } {
 	const trimmed = raw.trim();
-	if (!trimmed) return { cmd: "ls", rest: "" };
+	if (!trimmed) return { cmd: "pick", rest: "" };
 	const [first, ...restParts] = trimmed.split(/\s+/);
 	const rest = restParts.join(" ").trim();
-	const sub = first.toLowerCase();
-	if (["ls", "list", "add", "open", "rm", "remove", "pr", "help"].includes(sub)) {
-		return { cmd: sub === "list" ? "ls" : sub === "remove" ? "rm" : sub, rest };
+	const aliases: Record<string, string> = { list: "ls", remove: "rm", path: "open", new: "add" };
+	const sub = aliases[first.toLowerCase()] ?? first.toLowerCase();
+	if (["pick", "ls", "add", "switch", "open", "rm", "pr", "config", "help"].includes(sub)) {
+		return { cmd: sub, rest };
 	}
-	// Default: treat first token (and rest) as branch name for add.
-	return { cmd: "add", rest: trimmed };
+	return { cmd: "bare", rest: trimmed };
+}
+
+async function listOnly(pi: ExtensionAPI, ctx: ExtensionCommandContext, cwd: string): Promise<void> {
+	const worktrees = await listWorktrees(pi, cwd);
+	const mainPath = mainWorktreePath(worktrees);
+	ctx.ui.notify(worktrees.length ? worktrees.map((wt) => formatWt(wt, mainPath)).join("\n") : "No worktrees found", "info");
+}
+
+async function completionItems(pi: ExtensionAPI, cwd: string, prefix: string) {
+	const trimmed = prefix.trimStart();
+	const [command, ...rest] = trimmed.split(/\s+/);
+	const subs = ["switch", "new", "add", "pr", "open", "path", "ls", "rm", "config", "help"];
+	if (!trimmed.includes(" ")) {
+		return subs.filter((item) => item.startsWith(command)).map((item) => ({ value: item, label: item }));
+	}
+	const query = rest.join(" ").toLowerCase();
+	if (["switch", "open", "path", "rm"].includes(command)) {
+		let worktrees: Worktree[];
+		try { worktrees = await listWorktrees(pi, cwd); } catch { return null; }
+		return worktrees
+			.filter((wt) => !wt.bare && !wt.prunable)
+			.flatMap((wt) => [wt.branch, wt.path].filter((value): value is string => Boolean(value)))
+			.filter((value) => value.toLowerCase().includes(query))
+			.map((value) => ({ value: `${command} ${value}`, label: value }));
+	}
+	if (["new", "add"].includes(command)) {
+		const refs = await run(pi, ["for-each-ref", "--format=%(refname:short)", "refs/heads"], cwd);
+		return refs.code === 0 ? refs.stdout.split("\n").filter((value) => value.toLowerCase().includes(query)).map((value) => ({ value: `${command} ${value}`, label: value })) : null;
+	}
+	return null;
 }
 
 export default function (pi: ExtensionAPI) {
-	pi.registerCommand("worktree", {
-		description:
-			"Create, list, open, or remove git worktrees (/worktree, /worktree ls|add|open|rm|pr)",
-		getArgumentCompletions: (prefix) => {
-			const subs = ["ls", "add", "open", "rm", "pr", "help"];
-			const p = prefix.trim();
-			// Complete subcommands only for the first token.
-			if (!p.includes(" ")) {
-				const hits = subs.filter((s) => s.startsWith(p));
-				return hits.map((s) => ({ value: s, label: s }));
-			}
-			return null;
-		},
-		handler: async (args, ctx) => {
-			const cwd = await ensureRepo(pi, ctx);
-			if (!cwd) return;
-
-			const { cmd, rest } = parseArgs(args);
-
-			switch (cmd) {
-				case "help": {
-					ctx.ui.notify(
-						[
-							"/worktree                 list + pick",
-							"/worktree ls              list",
-							"/worktree <branch>        create",
-							"/worktree add <branch>    create",
-							"/worktree open <branch>   show/copy path",
-							"/worktree rm <branch>     remove (keeps branch)",
-							"/worktree pr <number>     worktree from PR",
-						].join("\n"),
-						"info",
-					);
-					return;
-				}
-				case "ls": {
-					await listAndMaybeOpen(pi, ctx, cwd);
-					return;
-				}
-				case "add": {
-					if (!rest) {
-						ctx.ui.notify("Usage: /worktree add <branch>", "error");
-						return;
-					}
-					const branch = rest.split(/\s+/)[0];
-					await createWorktree(pi, ctx, cwd, branch);
-					return;
-				}
-				case "open": {
-					if (!rest) {
-						ctx.ui.notify("Usage: /worktree open <branch>", "error");
-						return;
-					}
-					await openWorktree(pi, ctx, cwd, rest.split(/\s+/)[0]);
-					return;
-				}
-				case "rm": {
-					if (!rest) {
-						ctx.ui.notify("Usage: /worktree rm <branch>", "error");
-						return;
-					}
-					await removeWorktree(pi, ctx, cwd, rest.split(/\s+/)[0]);
-					return;
-				}
-				case "pr": {
-					if (!rest) {
-						ctx.ui.notify("Usage: /worktree pr <number>", "error");
-						return;
-					}
-					await createFromPr(pi, ctx, cwd, rest.split(/\s+/)[0]);
-					return;
-				}
-				default: {
-					ctx.ui.notify(`Unknown /worktree command: ${cmd}`, "error");
-				}
-			}
-		},
+	let activeCwd = process.cwd();
+	const config = readConfigSync();
+	pi.on?.("session_start", (_event, ctx) => {
+		activeCwd = ctx.cwd;
+		if (config.diagnostic) ctx.ui.notify(config.diagnostic, "warning");
 	});
+
+	const handleCommand = async (args: string, ctx: ExtensionCommandContext) => {
+		const parsed = parseArgs(args);
+		if (parsed.cmd === "config") {
+			const [setting, value] = parsed.rest.split(/\s+/, 2);
+			if (!setting) {
+				ctx.ui.notify(`Shortcut: ${config.shortcut ?? "off"}\nConfig: ${getConfigPath()}`, "info");
+				return;
+			}
+			if (setting === "shortcut" && !value) {
+				ctx.ui.notify(`Shortcut: ${config.shortcut ?? "off"}\nConfig: ${getConfigPath()}`, "info");
+				return;
+			}
+			if (setting !== "shortcut" || !value) {
+				ctx.ui.notify("Usage: /wt config shortcut <key|off>", "error");
+				return;
+			}
+			const shortcut = value.toLowerCase() === "off" ? null : value;
+			if (shortcut !== null && !validateShortcut(shortcut).valid) {
+				ctx.ui.notify(validateShortcut(shortcut).diagnostic ?? "Invalid shortcut", "error");
+				return;
+			}
+			const saved = await saveShortcut(shortcut);
+			if (!saved.ok) {
+				ctx.ui.notify(saved.diagnostic ?? "Could not save shortcut", "error");
+				return;
+			}
+			ctx.ui.notify(`Shortcut saved as ${shortcut ?? "off"}; reloading Pi resources`, "info");
+			await ctx.reload();
+			return;
+		}
+
+		const cwd = await ensureRepo(pi, ctx);
+		if (!cwd) return;
+		const { cmd, rest } = parsed;
+		if (cmd === "help") {
+			ctx.ui.notify([
+				"/wt                         pick and switch worktree",
+				"/wt switch <branch>         switch exactly",
+				"/wt <branch-or-path>        switch, or confirm creation",
+				"/wt new|add <branch>        create and switch",
+				"/wt pr <number>             create PR worktree; confirm switch",
+				"/wt open|path <branch>      show/copy path",
+				"/wt ls                      list",
+				"/wt rm <branch>             remove clean worktree",
+				"/wt config shortcut <key>   configure shortcut (or off)",
+				"/worktree                   long alias for /wt",
+			].join("\n"), "info");
+			return;
+		}
+		if (cmd === "ls") return listOnly(pi, ctx, cwd);
+		if (cmd === "open") {
+			if (!rest) return ctx.ui.notify("Usage: /wt open <branch>", "error");
+			return openWorktree(pi, ctx, cwd, rest);
+		}
+		if (cmd === "rm") {
+			if (!rest) return ctx.ui.notify("Usage: /wt rm <branch>", "error");
+			return removeWorktree(pi, ctx, cwd, rest);
+		}
+		if (cmd === "pick") {
+			if (!(await canStartSwitch(ctx))) return;
+			const worktrees = await listWorktrees(pi, cwd);
+			const mainPath = worktrees[0] ? await canonicalPath(worktrees[0].path) : null;
+			const available: Worktree[] = [];
+			for (const wt of worktrees) {
+				if (wt.bare || wt.prunable) continue;
+				const path = await canonicalPath(wt.path);
+				if (path) available.push({ ...wt, path });
+			}
+			const selected = await showWorktreePicker(ctx as any, available, await canonicalPath(ctx.cwd) ?? ctx.cwd, mainPath ?? undefined);
+			if (selected) await switchToWorktree(pi, ctx, cwd, selected as Worktree);
+			return;
+		}
+		if (cmd === "switch") {
+			if (!rest) return ctx.ui.notify("Usage: /wt switch <branch-or-path>", "error");
+			const wt = findWorktreeExact(await listWorktrees(pi, cwd), rest);
+			if (!wt) return ctx.ui.notify(`No exact worktree matching "${rest}"`, "error");
+			return switchToWorktree(pi, ctx, cwd, wt);
+		}
+		if (cmd === "add") {
+			if (!rest) return ctx.ui.notify("Usage: /wt new <branch>", "error");
+			if (!(await canStartSwitch(ctx))) return;
+			const wt = await createWorktree(pi, ctx, cwd, rest);
+			if (wt) await switchToWorktree(pi, ctx, cwd, wt);
+			return;
+		}
+		if (cmd === "pr") {
+			if (!rest) return ctx.ui.notify("Usage: /wt pr <number>", "error");
+			if (!(await canStartSwitch(ctx))) return;
+			const wt = await createFromPr(pi, ctx, cwd, rest);
+			if (wt) await switchToWorktree(pi, ctx, cwd, wt);
+			return;
+		}
+		if (cmd === "bare") {
+			if (!(await canStartSwitch(ctx))) return;
+			const existing = findWorktreeExact(await listWorktrees(pi, cwd), rest);
+			if (existing) return switchToWorktree(pi, ctx, cwd, existing);
+			if (!ctx.hasUI || !(await ctx.ui.confirm("Create worktree?", `Create ${rest} and continue this conversation there?`))) return;
+			const wt = await createWorktree(pi, ctx, cwd, rest);
+			if (wt) await switchToWorktree(pi, ctx, cwd, wt);
+		}
+	};
+
+	const command = {
+		description: "Pick, create, switch, or manage Git worktrees",
+		getArgumentCompletions: (prefix: string) => completionItems(pi, activeCwd, prefix),
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
+			try {
+				await handleCommand(args, ctx);
+			} catch (error) {
+				ctx.ui.notify((error as Error).message, "error");
+			}
+		},
+	};
+	pi.registerCommand("wt", command);
+	pi.registerCommand("worktree", command);
+
+	if (config.shortcut) {
+		pi.registerShortcut(config.shortcut as any, {
+			description: "Open worktree picker",
+			handler: (ctx) => {
+				if (ctx.mode !== "tui" || !ctx.isIdle() || ctx.hasPendingMessages()) {
+					ctx.ui.notify("Wait for Pi to become idle before switching worktrees", "warning");
+					return;
+				}
+				const ownCommands = pi.getCommands().filter((item) =>
+					item.source === "extension" && item.sourceInfo.path?.endsWith("git-worktree.ts"));
+				const own = ownCommands.find((item) => /^wt(?::\d+)?$/.test(item.name))
+					?? ownCommands.find((item) => /^worktree(?::\d+)?$/.test(item.name));
+				const invocation = own ? `/${own.name}` : null;
+				if (!invocation) {
+					ctx.ui.notify("Worktree command name conflicts with another extension", "error");
+					return;
+				}
+				if (typeof pi.sendUserMessage !== "function") {
+					ctx.ui.notify("This Pi version cannot dispatch commands from shortcuts; upgrade to Pi 0.84.2 or newer", "error");
+					return;
+				}
+				pi.sendUserMessage(invocation, { expandPromptTemplates: true });
+			},
+		});
+	}
 }

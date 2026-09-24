@@ -1,8 +1,8 @@
 {
   "name": "@codecapitano/pi-worktree",
-  "version": "1.2.2",
+  "version": "2.0.0",
   "private": true,
-  "description": "Git worktree slash commands for Pi (/worktree ls|add|open|rm|pr)",
+  "description": "Switch Pi conversations between Git worktrees with /wt",
   "license": "MIT",
   "type": "module",
   "author": "Sanju <https://sanju.sh/>",
@@ -25,6 +25,7 @@
   ],
   "files": [
     "extensions",
+    "lib",
     "README.md",
     "LICENSE",
     "NOTICE.md"
@@ -35,7 +36,7 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": ">=0.84.2"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
