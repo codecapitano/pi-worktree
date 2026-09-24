@@ -11,8 +11,8 @@ This repository is a maintained fork of [`thisuxhq/pi-worktree`](https://github.
 ## Layout
 
 ```text
-~/AGI/mobile/               ← main checkout
-~/AGI/mobile-fix-login/     ← worktree for fix/login
+~/foo/mobile/               ← main checkout
+~/foo/mobile-fix-login/     ← worktree for fix/login
 ```
 
 Sibling folders next to the main repository use the form `<repo>-<branch-slug>`.
