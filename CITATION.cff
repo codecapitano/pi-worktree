@@ -4,8 +4,8 @@ message: "Please cite the original project and this maintained fork."
 authors:
   - name: "THISUX Private Limited"
     website: "https://github.com/thisuxhq"
-version: 2.0.1
+version: 2.1.0
 repository-code: "https://github.com/codecapitano/pi-worktree"
 url: "https://github.com/codecapitano/pi-worktree"
 license: MIT
-date-released: 2026-09-24
+date-released: 2026-09-25

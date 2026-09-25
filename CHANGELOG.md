@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [2.1.0](https://github.com/codecapitano/pi-worktree/compare/pi-worktree-v2.0.1...pi-worktree-v2.1.0) - 2026-09-25
+
 ### Added
 
 - Add `/wt done` to switch from a secondary worktree to the main checkout and remove the secondary checkout after confirmation. Keep the branch and conversation history.

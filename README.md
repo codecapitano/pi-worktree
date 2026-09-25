@@ -14,7 +14,7 @@ Switch Pi conversations between Git worktrees. This maintained fork of [`thisuxh
 ## Install
 
 ```bash
-pi install git:github.com/codecapitano/pi-worktree@pi-worktree-v2.0.1
+pi install git:github.com/codecapitano/pi-worktree@pi-worktree-v2.1.0
 ```
 
 Run the same install command to replace an older pinned version. Reload an existing Pi session after installation:
@@ -23,7 +23,7 @@ Run the same install command to replace an older pinned version. Reload an exist
 /reload
 ```
 
-The pinned tag is the latest published release. To try unreleased changes such as `/wt done` before the next tag, run `pi -e ./extensions/git-worktree.ts` from a local checkout. The package is private, so install releases from GitHub rather than npm.
+Use `pi -e ./extensions/git-worktree.ts` when developing locally. The package is private, so install releases from GitHub rather than npm.
 
 ## Commands
 
