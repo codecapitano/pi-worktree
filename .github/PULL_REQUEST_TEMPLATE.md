@@ -18,6 +18,7 @@
   - [ ] `add` (local / remote / new branch)
   - [ ] `open`
   - [ ] `rm` (confirm + dirty refusal)
+  - [ ] `done` (switch to main + cleanup refusal for dirty, ignored, or in-tree session files)
   - [ ] `pr` (if `gh` change)
 - [ ] Did not break safety: no main-worktree or force removal
 

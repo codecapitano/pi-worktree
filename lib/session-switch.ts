@@ -26,6 +26,9 @@ type SwitchDependencies = {
 	revalidate(targetCwd: string): Promise<boolean>;
 	forkSession(sourcePath: string, targetCwd: string, sessionDir?: string): Promise<{ path: string }>;
 	removeSession(path: string): Promise<void>;
+	acceptFork?(path: string): Promise<boolean>;
+	/** Runs with the fresh context after Pi has replaced the session. Must handle its own errors. */
+	afterSwitch?(ctx: { ui: SwitchContext["ui"] }): Promise<void>;
 };
 
 function refuse(ctx: SwitchContext, message: string): SwitchStatus {
@@ -84,20 +87,31 @@ export async function continueConversationInWorktree(
 		return refuse(ctx, `Could not prepare the worktree session: ${(error as Error).message}`);
 	}
 
+	if (dependencies.acceptFork) {
+		let safe = false;
+		try { safe = await dependencies.acceptFork(forkPath); } catch { /* Fail closed. */ }
+		if (!safe) {
+			await dependencies.removeSession(forkPath).catch(() => undefined);
+			return refuse(ctx, "Session files are inside the worktree being removed; left intact");
+		}
+	}
 	if (!(await dependencies.revalidate(targetCwd))) {
 		await dependencies.removeSession(forkPath).catch(() => undefined);
 		return refuse(ctx, "The selected worktree changed before the session switch");
 	}
 
+	let switched = false;
 	let result: { cancelled: boolean };
 	try {
 		result = await ctx.switchSession(forkPath, {
 			withSession: async (replacementCtx) => {
-				replacementCtx.ui.notify(`Continued this conversation in ${targetCwd}`, "info");
+				switched = true;
+				if (dependencies.afterSwitch) await dependencies.afterSwitch(replacementCtx);
+				else replacementCtx.ui.notify(`Continued this conversation in ${targetCwd}`, "info");
 			},
 		});
 	} catch (error) {
-		await dependencies.removeSession(forkPath).catch(() => undefined);
+		if (!switched) await dependencies.removeSession(forkPath).catch(() => undefined);
 		throw error;
 	}
 	if (result.cancelled) {

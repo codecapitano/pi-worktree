@@ -92,6 +92,13 @@ test("cleans up a fork when switching is cancelled", async () => {
   assert.deepEqual(state.cleaned, ["/sessions/repo/fork.jsonl"]);
 });
 
+test("does not delete a live fork when a post-switch callback fails", async () => {
+  const state = harness({ dependencies: { afterSwitch: async () => { throw new Error("notification failed"); } } });
+  await assert.rejects(continueConversationInWorktree(state.ctx, "/repo-feature", state.dependencies), /notification failed/);
+  assert.deepEqual(state.cleaned, []);
+  assert.equal(state.switches.length, 1);
+});
+
 test("revalidates the worktree before and after creating the fork", async () => {
   let validations = 0;
   const state = harness({ dependencies: { revalidate: async () => ++validations === 1 } });

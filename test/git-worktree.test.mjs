@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { finishWorktree } from "../lib/finish-worktree.ts";
 import extension, {
 	branchSlug,
 	findWorktree,
@@ -273,6 +274,33 @@ test("reports the Git requirement when porcelain-z listing fails", async () => {
 	assert.match(state.notifications.at(-1).message, /requires Git 2\.36 or newer/);
 });
 
+test("/wt done refuses to remove the main worktree", async () => {
+	const repo = await mkdtemp(join(tmpdir(), "pi-worktree-main-test-"));
+	try {
+		const calls = [];
+		const command = loadCommand(async (_program, args) => {
+			calls.push(args);
+			if (args[0] === "rev-parse" && args[1] === "--is-inside-work-tree") return { code: 0, stdout: "true", stderr: "" };
+			if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { code: 0, stdout: repo, stderr: "" };
+			if (args[0] === "worktree" && args[1] === "list") return { code: 0, stdout: `worktree ${repo}\nHEAD aaaa\nbranch refs/heads/main\n`, stderr: "" };
+			throw new Error(`unexpected call: ${args.join(" ")}`);
+		}, "wt");
+		const state = context({ cwd: repo });
+		await command.handler("done", state.ctx);
+		assert.match(state.notifications.at(-1).message, /Refusing to remove the main worktree/);
+		assert.equal(calls.some((args) => args[0] === "worktree" && args[1] === "remove"), false);
+	} finally {
+		await rm(repo, { recursive: true, force: true });
+	}
+});
+
+test("/wt done rejects arguments", async () => {
+	const command = loadCommand(async (_program, args) => repoPrelude(args) ?? { code: 0, stdout: "", stderr: "" }, "wt");
+	const state = context();
+	await command.handler("done feature/a", state.ctx);
+	assert.match(state.notifications.at(-1).message, /Usage: \/wt done/);
+});
+
 test("removal requires an interactive context", async () => {
 	const calls = [];
 	const command = loadCommand(async (_program, args) => {
@@ -326,6 +354,57 @@ function execute(program, args, options = {}) {
 		child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
 	});
 }
+
+test("finishes a real clean checkout after session replacement and retains its branch", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-worktree-done-test-"));
+	const repo = join(root, "repo");
+	const secondary = join(root, "secondary");
+	await mkdir(repo);
+	try {
+		for (const args of [
+			["init", "-b", "main"],
+			["config", "user.name", "Test User"],
+			["config", "user.email", "test@example.com"],
+		]) assert.equal((await execute("git", args, { cwd: repo })).code, 0);
+		await writeFile(join(repo, "README.md"), "test\n");
+		await writeFile(join(repo, ".gitignore"), ".env\n");
+		for (const args of [["add", "README.md", ".gitignore"], ["commit", "-m", "initial"], ["worktree", "add", "-b", "feature/test", secondary]]) {
+			const result = await execute("git", args, { cwd: repo });
+			assert.equal(result.code, 0, result.stderr);
+		}
+		await writeFile(join(secondary, ".env"), "keep this\n");
+		const state = context({ cwd: secondary });
+		let replaced = false;
+		state.ctx.switchSession = async (_session, options) => {
+			replaced = true;
+			await options.withSession({ ui: state.ctx.ui });
+			return { cancelled: false };
+		};
+		const dependencies = {
+			exists: async () => true,
+			usesDefaultSessionDir: () => true,
+			revalidate: async () => true,
+			forkSession: async () => ({ path: "/sessions/fork.jsonl" }),
+			removeSession: async () => {},
+			isSessionSafe: async () => true,
+			isCurrentWorktree: async () => true,
+			isClean: async () => (await execute("git", ["status", "--porcelain=v1", "--untracked-files=all", "--ignored"], { cwd: secondary })).stdout === "",
+			removeWorktree: async () => {
+				assert.equal(replaced, true);
+				return execute("git", ["worktree", "remove", secondary], { cwd: repo });
+			},
+		};
+		assert.equal(await finishWorktree(state.ctx, repo, dependencies), "refused");
+		assert.equal(replaced, false);
+		await access(join(secondary, ".env"));
+		await rm(join(secondary, ".env"));
+		assert.equal(await finishWorktree(state.ctx, repo, dependencies), "removed");
+		await assert.rejects(access(secondary));
+		assert.equal((await execute("git", ["show-ref", "--verify", "refs/heads/feature/test"], { cwd: repo })).code, 0);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
 
 test("creates and safely removes a real temporary worktree while retaining its branch", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-worktree-test-"));

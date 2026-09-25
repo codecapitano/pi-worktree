@@ -9,6 +9,7 @@ By contributing, you agree to license your contribution under the repository's [
 - `extensions/git-worktree.ts`: Pi entry point, command registration, Git operations, and shortcut registration.
 - `lib/worktree-picker.ts`: filterable TUI picker and picker labels.
 - `lib/session-switch.ts`: persisted-session checks, latest-leaf checks, conversation forking, and session switching.
+- `lib/finish-worktree.ts`: `/wt done` safety checks and cleanup after session replacement.
 - `lib/config.ts`: shortcut validation and persistence.
 - `test/`: Node test files for configuration, Git behavior, session switching, and picker behavior.
 
@@ -38,10 +39,11 @@ Run the automated suite with `npm test`. Manually verify:
 
 1. `/wt` and `/worktree` open the picker, filter by branch, path, and commit, and switch only to available worktrees.
 2. `/wt switch`, `/wt new`, `/wt add`, `/wt open`, `/wt path`, `/wt ls`, and `/wt rm` match the documented exact-match and confirmation behavior.
-3. `/wt pr` fetches the PR, asks before switching, and retains the worktree when declined.
-4. A switch requires TUI mode, an idle Pi with no queued messages, a persisted session, and the latest conversation leaf. Confirm that the new conversation is a fork and the original remains available.
-5. Check the default `ctrl+alt+w` shortcut, `/wt config shortcut <key|off>`, `/reload`, and `/hotkeys`.
-6. Review PR trust prompts and confirm that worktrees are not sandboxes.
+3. `/wt done` refuses the main checkout and secondary worktrees with uncommitted, untracked, or ignored files. From a clean secondary worktree, confirm that Pi switches to the main checkout before removing it, while keeping the branch and session files. Test a custom session directory inside the secondary worktree too; removal must be refused.
+4. `/wt pr` fetches the PR, asks before switching, and retains the worktree when declined.
+5. A switch requires TUI mode, an idle Pi with no queued messages, a persisted session, and the latest conversation leaf. Confirm that the new conversation is a fork and the original remains available.
+6. Check the default `ctrl+alt+w` shortcut, `/wt config shortcut <key|off>`, `/reload`, and `/hotkeys`.
+7. Review PR trust prompts and confirm that worktrees are not sandboxes.
 
 Use a disposable repository for removal, dirty-worktree, PR, and trust checks.
 
