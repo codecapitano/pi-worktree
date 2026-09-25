@@ -17,13 +17,31 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { execFile } from "node:child_process";
 import { access, mkdir, realpath, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { promisify } from "node:util";
 import { getConfigPath, readConfigSync, saveShortcut, validateShortcut } from "../lib/config.ts";
+import { finishWorktree, sessionFileOutsideWorktree } from "../lib/finish-worktree.ts";
 import { continueConversationInWorktree, preflightConversationSwitch } from "../lib/session-switch.ts";
 import { showWorktreePicker } from "../lib/worktree-picker.ts";
 
 type ExecResult = { code: number; stdout: string; stderr: string };
+const execFileAsync = promisify(execFile);
+// Survives extension reload when switching sessions in the same Pi process.
+const removalsKey = Symbol.for("codecapitano.pi-worktree.pending-removals");
+const pendingRemovals: Set<string> = ((globalThis as any)[removalsKey] ??= new Set<string>());
+
+// Unlike pi.exec, this remains usable after Pi replaces the session runtime.
+async function runGitAfterSwitch(args: string[], cwd: string): Promise<ExecResult> {
+	try {
+		const { stdout, stderr } = await execFileAsync("git", args, { cwd });
+		return { code: 0, stdout, stderr };
+	} catch (error) {
+		const failure = error as Error & { code?: number; stdout?: string; stderr?: string };
+		return { code: typeof failure.code === "number" ? failure.code : 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? failure.message };
+	}
+}
 
 export type Worktree = {
 	path: string;
@@ -665,6 +683,10 @@ async function switchToWorktree(
 		return;
 	}
 	const target = await canonicalPath(worktree.path);
+	if (target && pendingRemovals.has(target)) {
+		ctx.ui.notify("This worktree is being removed", "warning");
+		return;
+	}
 	if (!target) {
 		ctx.ui.notify("The selected worktree no longer exists", "error");
 		return;
@@ -709,6 +731,77 @@ async function switchToWorktree(
 	}
 }
 
+async function finishCurrentWorktree(pi: ExtensionAPI, ctx: ExtensionCommandContext, repoRoot: string): Promise<void> {
+	if (!supportsSwitching(ctx)) return;
+	if (switchInProgress) {
+		ctx.ui.notify("A worktree switch is already in progress", "warning");
+		return;
+	}
+	const worktrees = await listWorktrees(pi, repoRoot);
+	const main = worktrees[0];
+	const source = await canonicalPath(repoRoot);
+	const mainPath = main && !main.bare && !main.prunable ? await canonicalPath(main.path) : null;
+	if (!mainPath || !source) {
+		ctx.ui.notify("The main worktree is not available", "error");
+		return;
+	}
+	if (source === mainPath) {
+		ctx.ui.notify("Refusing to remove the main worktree", "error");
+		return;
+	}
+	if (pendingRemovals.has(source)) {
+		ctx.ui.notify("This worktree is already being removed", "warning");
+		return;
+	}
+	const codingAgent = await import("@earendil-works/pi-coding-agent");
+	const registered = async (path: string) => {
+		const listed = await runGitAfterSwitch(["worktree", "list", "--porcelain", "-z"], mainPath);
+		if (listed.code !== 0) return false;
+		for (const wt of parseWorktrees(listed.stdout)) {
+			if (wt.bare || wt.prunable || wt.locked) continue;
+			if (await canonicalPath(wt.path) === path) return true;
+		}
+		return false;
+	};
+	const outsideSource = (file: string) => sessionFileOutsideWorktree(source, file);
+	// Override cwd without eagerly reading Pi's guarded context getters.
+	const finishCtx = Object.create(ctx, { cwd: { value: source } }) as ExtensionCommandContext;
+	switchInProgress = true;
+	pendingRemovals.add(source);
+	try {
+		await finishWorktree(finishCtx, mainPath, {
+			exists: async (path) => access(path).then(() => true, () => false),
+			usesDefaultSessionDir: () => {
+				const manager = ctx.sessionManager as any;
+				return typeof manager.usesDefaultSessionDir === "function" && manager.usesDefaultSessionDir();
+			},
+			revalidate: () => registered(mainPath),
+			forkSession: async (sourceSession, targetCwd, sessionDir) => {
+				const manager = codingAgent.SessionManager.forkFrom(sourceSession, targetCwd, sessionDir);
+				const path = manager.getSessionFile();
+				if (!path) throw new Error("Pi did not create a persisted target session");
+				return { path };
+			},
+			removeSession: async (path) => unlink(path),
+			isSessionSafe: async () => {
+				const file = ctx.sessionManager.getSessionFile();
+				return Boolean(file && await outsideSource(file) && await outsideSource(ctx.sessionManager.getSessionDir()));
+			},
+			acceptFork: (path) => outsideSource(path),
+			isCurrentWorktree: () => registered(source),
+			isClean: async () => {
+				const status = await runGitAfterSwitch(["status", "--porcelain=v1", "--untracked-files=all", "--ignored"], source);
+				if (status.code !== 0) throw new Error(`Could not inspect worktree status: ${status.stderr}`);
+				return status.stdout.length === 0;
+			},
+			removeWorktree: async () => runGitAfterSwitch(["worktree", "remove", source], mainPath),
+		});
+	} finally {
+		pendingRemovals.delete(source);
+		switchInProgress = false;
+	}
+}
+
 function parseArgs(raw: string): { cmd: string; rest: string } {
 	const trimmed = raw.trim();
 	if (!trimmed) return { cmd: "pick", rest: "" };
@@ -716,7 +809,7 @@ function parseArgs(raw: string): { cmd: string; rest: string } {
 	const rest = restParts.join(" ").trim();
 	const aliases: Record<string, string> = { list: "ls", remove: "rm", path: "open", new: "add" };
 	const sub = aliases[first.toLowerCase()] ?? first.toLowerCase();
-	if (["pick", "ls", "add", "switch", "open", "rm", "pr", "config", "help"].includes(sub)) {
+	if (["pick", "ls", "add", "switch", "open", "rm", "pr", "done", "config", "help"].includes(sub)) {
 		return { cmd: sub, rest };
 	}
 	return { cmd: "bare", rest: trimmed };
@@ -731,7 +824,7 @@ async function listOnly(pi: ExtensionAPI, ctx: ExtensionCommandContext, cwd: str
 async function completionItems(pi: ExtensionAPI, cwd: string, prefix: string) {
 	const trimmed = prefix.trimStart();
 	const [command, ...rest] = trimmed.split(/\s+/);
-	const subs = ["switch", "new", "add", "pr", "open", "path", "ls", "rm", "config", "help"];
+	const subs = ["switch", "new", "add", "pr", "open", "path", "ls", "rm", "done", "config", "help"];
 	if (!trimmed.includes(" ")) {
 		return subs.filter((item) => item.startsWith(command)).map((item) => ({ value: item, label: item }));
 	}
@@ -804,12 +897,17 @@ export default function (pi: ExtensionAPI) {
 				"/wt open|path <branch>      show/copy path",
 				"/wt ls                      list",
 				"/wt rm <branch>             remove clean worktree",
+				"/wt done                    leave and remove current clean worktree",
 				"/wt config shortcut <key>   configure shortcut (or off)",
 				"/worktree                   long alias for /wt",
 			].join("\n"), "info");
 			return;
 		}
 		if (cmd === "ls") return listOnly(pi, ctx, cwd);
+		if (cmd === "done") {
+			if (rest) return ctx.ui.notify("Usage: /wt done", "error");
+			return finishCurrentWorktree(pi, ctx, cwd);
+		}
 		if (cmd === "open") {
 			if (!rest) return ctx.ui.notify("Usage: /wt open <branch>", "error");
 			return openWorktree(pi, ctx, cwd, rest);

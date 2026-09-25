@@ -23,7 +23,7 @@ Run the same install command to replace an older pinned version. Reload an exist
 /reload
 ```
 
-Use `pi -e ./extensions/git-worktree.ts` when developing locally. The package is private, so install from the GitHub release tag rather than npm.
+The pinned tag is the latest published release. To try unreleased changes such as `/wt done` before the next tag, run `pi -e ./extensions/git-worktree.ts` from a local checkout. The package is private, so install releases from GitHub rather than npm.
 
 ## Commands
 
@@ -41,6 +41,7 @@ Use `pi -e ./extensions/git-worktree.ts` when developing locally. The package is
 | `/wt path <branch-or-path>` | Show the path and copy it on macOS. |
 | `/wt ls` | List worktrees. |
 | `/wt rm <branch-or-path>` | Remove an exact, clean worktree after confirmation. The branch is kept. |
+| `/wt done` | Leave the current worktree for the main checkout, then remove it if it is still clean. Keep the branch and session history. |
 | `/wt config shortcut` | Show the current shortcut. |
 | `/wt config shortcut <key>` | Save a shortcut. |
 | `/wt config shortcut off` | Disable the shortcut. |
@@ -67,6 +68,8 @@ Otherwise, worktrees are siblings of the main checkout, named `<repo>-<branch-sl
 A switch is available only in interactive TUI mode when Pi is idle, has no queued messages, and the session is persisted. The active conversation must be the latest leaf. If you have branched the conversation, run `/fork` first.
 
 Every switch, including picker and shortcut selections, asks you to confirm the target before loading it. Switching forks the current conversation into the target worktree and opens the fork. The original conversation remains retained in its original worktree.
+
+Run `/wt done` from a secondary worktree to return to the main checkout and remove the secondary checkout. Pi forks the conversation into the main checkout first. If the worktree has uncommitted, untracked, or ignored files, Pi stays put. If Git refuses removal after the switch, the worktree remains and Pi reports its path. `/wt done` refuses to remove a worktree that contains its session files. It never deletes the branch or session files.
 
 ## Pull request trust
 
