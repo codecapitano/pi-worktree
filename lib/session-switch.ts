@@ -1,6 +1,6 @@
 export type SwitchStatus = "switched" | "cancelled" | "refused";
 
-type Entry = { id?: string };
+type Entry = { id?: string; type?: string };
 
 type SwitchContext = {
 	mode: string;
@@ -25,6 +25,7 @@ type SwitchDependencies = {
 	usesDefaultSessionDir(): boolean;
 	revalidate(targetCwd: string): Promise<boolean>;
 	forkSession(sourcePath: string, targetCwd: string, sessionDir?: string): Promise<{ path: string }>;
+	createSession?(targetCwd: string, sessionDir: string | undefined, entries: readonly Entry[]): Promise<{ path: string }>;
 	removeSession(path: string): Promise<void>;
 	acceptFork?(path: string): Promise<boolean>;
 	/** Runs with the fresh context after Pi has replaced the session. Must handle its own errors. */
@@ -49,11 +50,11 @@ export async function preflightConversationSwitch(
 		return false;
 	}
 	const sourcePath = ctx.sessionManager.getSessionFile();
-	if (!sourcePath || !(await exists(sourcePath))) {
-		refuse(ctx, "Switching requires a persisted session. Start a conversation before switching worktrees");
+	const entries = ctx.sessionManager.getEntries();
+	if ((!sourcePath || !(await exists(sourcePath))) && entries.some((entry) => entry.type === "message")) {
+		refuse(ctx, "The conversation session file is missing; switching refused to avoid losing history");
 		return false;
 	}
-	const entries = ctx.sessionManager.getEntries();
 	const leafId = ctx.sessionManager.getLeafId();
 	const lastEntryId = entries.at(-1)?.id ?? null;
 	if (leafId !== lastEntryId) {
@@ -73,7 +74,9 @@ export async function continueConversationInWorktree(
 		ctx.ui.notify("This worktree is already active", "info");
 		return "refused";
 	}
-	const sourcePath = ctx.sessionManager.getSessionFile()!;
+	const sourcePath = ctx.sessionManager.getSessionFile();
+	const persisted = Boolean(sourcePath && await dependencies.exists(sourcePath));
+	const entries = ctx.sessionManager.getEntries();
 	if (!(await dependencies.revalidate(targetCwd))) {
 		return refuse(ctx, "The selected worktree is no longer registered or available");
 	}
@@ -82,7 +85,13 @@ export async function continueConversationInWorktree(
 	const sessionDir = dependencies.usesDefaultSessionDir() ? undefined : sourceSessionDir;
 	let forkPath: string;
 	try {
-		forkPath = (await dependencies.forkSession(sourcePath, targetCwd, sessionDir)).path;
+		if (persisted) {
+			forkPath = (await dependencies.forkSession(sourcePath!, targetCwd, sessionDir)).path;
+		} else {
+			if (entries.some((entry) => entry.type === "message")) throw new Error("The conversation session file is missing");
+			if (!dependencies.createSession) throw new Error("This host cannot prepare a fresh worktree session");
+			forkPath = (await dependencies.createSession(targetCwd, sessionDir, entries)).path;
+		}
 	} catch (error) {
 		return refuse(ctx, `Could not prepare the worktree session: ${(error as Error).message}`);
 	}

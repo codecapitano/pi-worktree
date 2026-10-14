@@ -65,13 +65,17 @@ Otherwise, worktrees are siblings of the main checkout, named `<repo>-<branch-sl
 
 ## Switching conversations
 
-A switch is available only in interactive TUI mode when Pi is idle, has no queued messages, and the session is persisted. The active conversation must be the latest leaf. If you have branched the conversation, run `/fork` first.
+A switch is available only in interactive TUI mode when Pi is idle and has no queued messages. You can switch immediately after starting Pi, before sending your first message. A fresh session keeps its setup entries in the target worktree. Existing conversations require their session file to be available. The active conversation must be the latest leaf. If you have branched the conversation, run `/fork` first.
 
 Every switch, including picker and shortcut selections, asks you to confirm the target before loading it. Switching forks the current conversation into the target worktree and opens the fork. The original conversation remains retained in its original worktree.
+
+Switching refuses an incomplete checkout when its index is empty but `HEAD` contains files, including unpopulated worktrees and checkouts with all files staged for deletion. It reports the target path without changing files or repairing the checkout. Inspection failures also block switching. The check runs before confirmation and again before forking and switching. Truly empty commits, populated dirty worktrees, and sparse checkouts remain allowed.
 
 Run `/wt done` from a secondary worktree to return to the main checkout and remove the secondary checkout. Pi forks the conversation into the main checkout first. If the worktree has uncommitted, untracked, or ignored files, Pi stays put. If Git refuses removal after the switch, the worktree remains and Pi reports its path. `/wt done` refuses to remove a worktree that contains its session files. It never deletes the branch or session files.
 
 ## Pull request trust
+
+`/wt pr <number>` fetches the PR head and refreshes its target branch at `origin/<target-branch>` for remote-base reviews, including when reusing an existing PR worktree. The target comes from GitHub and can be a branch other than `main`. Local target branches and the original checkout are unchanged. If the target cannot be refreshed, the command reports the error without creating or switching into the PR worktree.
 
 `/wt pr` and every other way of entering a worktree ask for confirmation before continuing. PR code, `AGENTS.md`, `CLAUDE.md`, and trusted `.pi` resources may load. Trust in the parent conversation or repository does not make PR content safe. Review the code and trust boundaries before confirming.
 

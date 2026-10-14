@@ -68,13 +68,82 @@ test("uses the target default session directory when the source uses its default
   assert.equal(calls[0][2], undefined);
 });
 
+test("switches a fresh session whose assigned file has not been written", async () => {
+  const entries = [{ id: "setup", type: "model_change", modelId: "test" }];
+  const calls = [];
+  const state = harness({
+    sessionManager: {
+      getSessionFile: () => "/sessions/unwritten.jsonl",
+      getSessionDir: () => "/sessions/repo",
+      getEntries: () => entries,
+      getLeafId: () => "setup",
+    },
+    dependencies: {
+      exists: async () => false,
+      createSession: async (...args) => { calls.push(args); return { path: "/sessions/new.jsonl" }; },
+      forkSession: async () => { assert.fail("must not fork an unwritten file"); },
+    },
+  });
+  assert.equal(await continueConversationInWorktree(state.ctx, "/repo-feature", state.dependencies), "switched");
+  assert.deepEqual(calls, [["/repo-feature", "/sessions/repo", entries]]);
+  assert.deepEqual(state.switches, ["/sessions/new.jsonl"]);
+});
+
+test("starts an empty session in the target default session directory", async () => {
+  const calls = [];
+  const state = harness({
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionDir: () => "/sessions/repo",
+      getEntries: () => [],
+      getLeafId: () => null,
+    },
+    dependencies: {
+      usesDefaultSessionDir: () => true,
+      createSession: async (...args) => { calls.push(args); return { path: "/sessions/target/new.jsonl" }; },
+    },
+  });
+  assert.equal(await continueConversationInWorktree(state.ctx, "/repo-feature", state.dependencies), "switched");
+  assert.deepEqual(calls, [["/repo-feature", undefined, []]]);
+});
+
+test("cleans up a fresh target session when switching is cancelled", async () => {
+  const state = harness({
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionDir: () => "/sessions/repo",
+      getEntries: () => [],
+      getLeafId: () => null,
+    },
+    switchSession: async () => ({ cancelled: true }),
+    dependencies: { createSession: async () => ({ path: "/sessions/new.jsonl" }) },
+  });
+  assert.equal(await continueConversationInWorktree(state.ctx, "/repo-feature", state.dependencies), "cancelled");
+  assert.deepEqual(state.cleaned, ["/sessions/new.jsonl"]);
+});
+
+test("refuses a missing file for an existing conversation", async () => {
+  const state = harness({
+    sessionManager: {
+      getSessionFile: () => "/sessions/lost.jsonl",
+      getSessionDir: () => "/sessions/repo",
+      getEntries: () => [{ id: "last", type: "message" }],
+      getLeafId: () => "last",
+    },
+    dependencies: { exists: async () => false },
+  });
+  assert.equal(await continueConversationInWorktree(state.ctx, "/repo-feature", state.dependencies), "refused");
+  assert.deepEqual(state.switches, []);
+  assert.match(state.notifications.at(-1).message, /avoid losing history/);
+});
+
 test("refuses unsafe switching states before creating a fork", async () => {
   for (const overrides of [
     { mode: "print" },
     { hasUI: false },
     { isIdle: () => false },
     { hasPendingMessages: () => true },
-    { sessionManager: { getSessionFile: () => undefined, getSessionDir: () => "/sessions", getLeafId: () => null, getEntries: () => [] } },
+    { sessionManager: { getSessionFile: () => undefined, getSessionDir: () => "/sessions", getLeafId: () => "message", getEntries: () => [{ id: "message", type: "message" }] } },
     { sessionManager: { getSessionFile: () => "/sessions/source.jsonl", getSessionDir: () => "/sessions", getLeafId: () => "old", getEntries: () => [{ id: "old" }, { id: "new" }] } },
   ]) {
     let forked = false;

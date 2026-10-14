@@ -22,6 +22,7 @@ import { access, mkdir, realpath, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { getConfigPath, readConfigSync, saveShortcut, validateShortcut } from "../lib/config.ts";
+import { createFreshSession } from "../lib/fresh-session.ts";
 import { finishWorktree, sessionFileOutsideWorktree } from "../lib/finish-worktree.ts";
 import { continueConversationInWorktree, preflightConversationSwitch } from "../lib/session-switch.ts";
 import { showWorktreePicker } from "../lib/worktree-picker.ts";
@@ -528,7 +529,7 @@ async function createFromPr(
 			"view",
 			prNumber,
 			"--json",
-			"headRefName,headRefOid,number,title",
+			"headRefName,headRefOid,baseRefName,number,title",
 			"--repo",
 			originUrl,
 		],
@@ -546,6 +547,7 @@ async function createFromPr(
 	let data: {
 		headRefName?: string;
 		headRefOid?: string;
+		baseRefName?: string;
 		number?: number;
 		title?: string;
 	};
@@ -562,9 +564,15 @@ async function createFromPr(
 		return;
 	}
 
-	if (!(await isValidBranch(pi, cwd, branch))) {
-		ctx.ui.notify(`PR #${prNumber} has an invalid head branch: ${branch}`, "error");
-		return;
+	const baseBranch = data.baseRefName;
+	for (const [kind, name] of [["head", branch], ["base", baseBranch]] as const) {
+		// Validate literal refs, not --branch's previous-checkout expansion (@{-1}).
+		if (typeof name !== "string" || !name || name.startsWith("-") ||
+			(await run(pi, ["check-ref-format", `refs/heads/${name}`], cwd)).code !== 0 ||
+			!(await isValidBranch(pi, cwd, name))) {
+			ctx.ui.notify(`PR #${prNumber} has an invalid ${kind} branch: ${name ?? "(missing)"}`, "error");
+			return;
+		}
 	}
 
 	const prRef = `refs/pi-worktree/pr/${prNumber}`;
@@ -587,6 +595,17 @@ async function createFromPr(
 			`Fetched head for PR #${prNumber} does not match GitHub's reported head`,
 			"error",
 		);
+		return;
+	}
+
+	// Refresh only the remote review base, including when reusing a PR worktree.
+	const fetchBase = await run(
+		pi,
+		["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
+		cwd,
+	);
+	if (fetchBase.code !== 0) {
+		ctx.ui.notify(`Could not refresh origin/${baseBranch}:\n${fetchBase.stderr || fetchBase.stdout}`, "error");
 		return;
 	}
 
@@ -667,6 +686,25 @@ async function canStartSwitch(ctx: ExtensionCommandContext): Promise<boolean> {
 	);
 }
 
+async function inspectCheckout(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	target: string,
+): Promise<boolean> {
+	try {
+		const index = await run(pi, ["ls-files", "-z"], target);
+		if (index.code !== 0) throw new Error(index.stderr || index.stdout || "git ls-files failed");
+		if (index.stdout.length > 0) return true;
+		const tree = await run(pi, ["ls-tree", "-r", "--name-only", "-z", "HEAD"], target);
+		if (tree.code !== 0) throw new Error(tree.stderr || tree.stdout || "git ls-tree failed");
+		if (tree.stdout.length === 0) return true;
+		ctx.ui.notify(`Incomplete checkout:\n${target}\nThe index is empty but HEAD contains files. The checkout may be unpopulated or all files may be staged for deletion. Switch refused; no files changed.`, "error");
+	} catch (error) {
+		ctx.ui.notify(`Could not inspect worktree checkout:\n${target}\n${(error as Error).message}\nSwitch refused; no files changed.`, "error");
+	}
+	return false;
+}
+
 async function switchToWorktree(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
@@ -699,11 +737,11 @@ async function switchToWorktree(
 			ctx.ui.notify("This worktree is already active", "info");
 			return;
 		}
+		if (!(await inspectCheckout(pi, ctx, target))) return;
 		if (!(await ctx.ui.confirm("Continue in worktree?", `${target}\n\nWorktree code, AGENTS.md, CLAUDE.md, and trusted .pi resources may load. Review the target before continuing.`))) {
 			ctx.ui.notify(`Worktree retained at ${target}`, "info");
 			return;
 		}
-		const codingAgent = await import("@earendil-works/pi-coding-agent");
 		await continueConversationInWorktree(ctx as any, target, {
 			exists: async (path) => access(path).then(() => true, () => false),
 			usesDefaultSessionDir: () => {
@@ -714,11 +752,16 @@ async function switchToWorktree(
 				const listed = await listWorktrees(pi, repoRoot);
 				for (const candidate of listed) {
 					if (candidate.bare || candidate.prunable) continue;
-					if (await canonicalPath(candidate.path) === expected) return true;
+					if (await canonicalPath(candidate.path) === expected) return inspectCheckout(pi, ctx, expected);
 				}
 				return false;
 			},
+			createSession: async (targetCwd, sessionDir, entries) => {
+				const { SessionManager } = await import("@earendil-works/pi-coding-agent");
+				return createFreshSession((cwd, dir) => SessionManager.create(cwd, dir), targetCwd, sessionDir, entries);
+			},
 			forkSession: async (source, targetCwd, sessionDir) => {
+				const codingAgent = await import("@earendil-works/pi-coding-agent");
 				const manager = codingAgent.SessionManager.forkFrom(source, targetCwd, sessionDir);
 				const path = manager.getSessionFile();
 				if (!path) throw new Error("Pi did not create a persisted target session");
@@ -776,6 +819,9 @@ async function finishCurrentWorktree(pi: ExtensionAPI, ctx: ExtensionCommandCont
 				return typeof manager.usesDefaultSessionDir === "function" && manager.usesDefaultSessionDir();
 			},
 			revalidate: () => registered(mainPath),
+			createSession: (targetCwd, sessionDir, entries) => createFreshSession(
+				(cwd, dir) => codingAgent.SessionManager.create(cwd, dir), targetCwd, sessionDir, entries,
+			),
 			forkSession: async (sourceSession, targetCwd, sessionDir) => {
 				const manager = codingAgent.SessionManager.forkFrom(sourceSession, targetCwd, sessionDir);
 				const path = manager.getSessionFile();
@@ -824,9 +870,21 @@ async function listOnly(pi: ExtensionAPI, ctx: ExtensionCommandContext, cwd: str
 async function completionItems(pi: ExtensionAPI, cwd: string, prefix: string) {
 	const trimmed = prefix.trimStart();
 	const [command, ...rest] = trimmed.split(/\s+/);
-	const subs = ["switch", "new", "add", "pr", "open", "path", "ls", "rm", "done", "config", "help"];
+	const subs = [
+		{ value: "switch", description: "Switch to an existing worktree by branch or path" },
+		{ value: "new", description: "Create a worktree and switch to it" },
+		{ value: "add", description: "Alias for new: create a worktree and switch to it" },
+		{ value: "pr", description: "Create a pull request worktree and confirm switching" },
+		{ value: "open", description: "Show and copy a worktree's path" },
+		{ value: "path", description: "Alias for open: show and copy a worktree's path" },
+		{ value: "ls", description: "List worktrees" },
+		{ value: "rm", description: "Remove a clean worktree" },
+		{ value: "done", description: "Leave and remove the current clean worktree" },
+		{ value: "config", description: "Show or change the worktree picker shortcut" },
+		{ value: "help", description: "Show worktree command usage" },
+	];
 	if (!trimmed.includes(" ")) {
-		return subs.filter((item) => item.startsWith(command)).map((item) => ({ value: item, label: item }));
+		return subs.filter((item) => item.value.startsWith(command)).map((item) => ({ ...item, label: item.value }));
 	}
 	const query = rest.join(" ").toLowerCase();
 	if (["switch", "open", "path", "rm"].includes(command)) {

@@ -8,7 +8,7 @@ By contributing, you agree to license your contribution under the repository's [
 
 - `extensions/git-worktree.ts`: Pi entry point, command registration, Git operations, and shortcut registration.
 - `lib/worktree-picker.ts`: filterable TUI picker and picker labels.
-- `lib/session-switch.ts`: persisted-session checks, latest-leaf checks, conversation forking, and session switching.
+- `lib/session-switch.ts`: session-history checks, latest-leaf checks, conversation forking, and session switching.
 - `lib/finish-worktree.ts`: `/wt done` safety checks and cleanup after session replacement.
 - `lib/config.ts`: shortcut validation and persistence.
 - `test/`: Node test files for configuration, Git behavior, session switching, and picker behavior.
@@ -35,13 +35,24 @@ Run the extension in an ordinary TUI session when checking conversation switchin
 
 ## Tests and manual checks
 
-Run the automated suite with `npm test`. Manually verify:
+Run the automated suite with `npm test`. Git fixtures disable commit signing and hooks locally; they do not change your global Git configuration. Fixture commands have a timeout and report sandbox denials as failures.
+
+If your sandbox permits Git fixtures only in a specific temporary directory, create that directory and set `TMPDIR` before starting Node. For example, with the existing nono Git temporary directory:
+
+```bash
+mkdir -p "$HOME/.pi/nono-git-tmp"
+TMPDIR="$HOME/.pi/nono-git-tmp" node --test test/*.test.mjs
+```
+
+Git command policies must also permit fixture initialization with `git init -b main`. A filesystem grant does not authorize that command. Do not disable sandbox protections or treat denied integration tests as passing.
+
+Manually verify:
 
 1. `/wt` and `/worktree` open the picker, filter by branch, path, and commit, and switch only to available worktrees.
 2. `/wt switch`, `/wt new`, `/wt add`, `/wt open`, `/wt path`, `/wt ls`, and `/wt rm` match the documented exact-match and confirmation behavior.
 3. `/wt done` refuses the main checkout and secondary worktrees with uncommitted, untracked, or ignored files. From a clean secondary worktree, confirm that Pi switches to the main checkout before removing it, while keeping the branch and session files. Test a custom session directory inside the secondary worktree too; removal must be refused.
 4. `/wt pr` fetches the PR, asks before switching, and retains the worktree when declined.
-5. A switch requires TUI mode, an idle Pi with no queued messages, a persisted session, and the latest conversation leaf. Confirm that the new conversation is a fork and the original remains available.
+5. A switch requires TUI mode, an idle Pi with no queued messages, and the latest conversation leaf. Before sending your first message, try `/wt new` and `/wt pr`; confirm that switching works and preserves session setup entries. For existing conversations, confirm that the new conversation is a fork and the original remains available. Switching must refuse an existing conversation whose session file is missing.
 6. Check the default `ctrl+alt+w` shortcut, `/wt config shortcut <key|off>`, `/reload`, and `/hotkeys`.
 7. Review PR trust prompts and confirm that worktrees are not sandboxes.
 
