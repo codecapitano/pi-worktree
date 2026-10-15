@@ -140,9 +140,11 @@ test("reports an incompatible Pi shortcut host", async () => {
 function context(overrides = {}) {
 	const notifications = [];
 	const confirmations = [];
+	const selections = [];
 	return {
 		notifications,
 		confirmations,
+		selections,
 		ctx: {
 			hasUI: true,
 			mode: "tui",
@@ -165,8 +167,10 @@ function context(overrides = {}) {
 					confirmations.push({ title, message });
 					return true;
 				},
-				async select() {
-					return null;
+				async select(title, options) {
+					selections.push({ title, options });
+					if (options[0] === "Continue") return await this.confirm("Continue in worktree?", title) ? "Continue" : undefined;
+					return undefined;
 				},
 			},
 			...overrides,
@@ -255,6 +259,7 @@ test("exact and bare switch commands warn before entering an existing worktree",
 			assert.equal(switched, false, args);
 			assert.equal(state.confirmations.length, 1, `${args}: ${JSON.stringify(state.notifications)}`);
 			assert.match(state.confirmations[0].message, /AGENTS\.md/);
+			assert.ok(state.selections[0]?.options.some((option) => /New terminal panes/.test(option)), "terminal pane preference must be discoverable");
 		}
 	} finally {
 		await rm(root, { recursive: true, force: true });
@@ -262,7 +267,7 @@ test("exact and bare switch commands warn before entering an existing worktree",
 });
 
 test("refuses an incomplete checkout before switch confirmation", async (t) => {
-	const root = await mkdtemp(join(tmpdir(), "pi-worktree-incomplete-test-"));
+	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-worktree-incomplete-test-")));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const repo = join(root, "repo");
 	const target = join(root, "target");
@@ -304,7 +309,7 @@ for (const scenario of [
 	{ name: "late empty index", index: { code: 0, stdout: "README.md\0" }, tree: { code: 0, stdout: "README.md\0" }, late: true },
 ]) {
 	test(`checkout safeguard handles ${scenario.name}`, async (t) => {
-		const root = await mkdtemp(join(tmpdir(), "pi-worktree-inspection-test-"));
+		const root = await realpath(await mkdtemp(join(tmpdir(), "pi-worktree-inspection-test-")));
 		t.after(() => rm(root, { recursive: true, force: true }));
 		const repo = join(root, "repo");
 		const target = join(root, "target");
@@ -420,6 +425,35 @@ test("/wt done refuses to remove the main worktree", async () => {
 	} finally {
 		await rm(repo, { recursive: true, force: true });
 	}
+});
+
+test("/wt done exposes terminal preferences before confirming removal", async (t) => {
+	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-worktree-done-ui-")));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const repo = join(root, "repo");
+	const target = join(root, "feature");
+	await mkdir(repo);
+	for (const args of [
+		["init", "-b", "main"],
+		["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "-c", `core.hooksPath=${join(root, "no-hooks")}`, "commit", "--allow-empty", "-m", "initial"],
+		["worktree", "add", "-b", "feature", target],
+	]) {
+		const result = await execute("git", args, { cwd: repo, timeout: 5000 });
+		assert.equal(result.code, 0, result.stderr);
+	}
+	const command = loadCommand((program, args, options) => execute(program, args, { cwd: options?.cwd ?? target, timeout: 5000 }), "wt");
+	const state = context({ cwd: target });
+	state.ctx.sessionManager.getSessionDir = () => root;
+	let switched = false;
+	state.ctx.switchSession = async () => { switched = true; return { cancelled: false }; };
+	const screens = [];
+	state.ctx.ui.select = async (title, options) => { screens.push({ title, options }); return undefined; };
+	await command.handler("done", state.ctx);
+	assert.equal(screens.length, 1, JSON.stringify(state.notifications));
+	assert.match(screens[0].title, /Only a clean worktree will be removed/);
+	assert.ok(screens[0].options.some((option) => /New terminal panes/.test(option)));
+	assert.equal(switched, false);
+	await access(join(target, ".git"));
 });
 
 test("/wt done rejects arguments", async () => {
@@ -795,6 +829,23 @@ test("PR checkout refuses an unpopulated target after successful creation", asyn
 	assert.ok(state.notifications.at(-1).message.includes(target));
 	assert.equal(calls.some((args) => ["restore", "reset", "rm", "read-tree"].includes(args[0]) || (args[0] === "worktree" && args[1] === "remove")), false);
 	await access(target);
+});
+
+test("terminal-cwd config is saved and shown without Git or reload", async () => {
+	const command = loadCommand(async () => { throw new Error("config must not run Git"); }, "wt");
+	const state = context();
+	await command.handler("config terminal-cwd on", state.ctx);
+	assert.match(state.notifications.at(-1).message, /terminal.*on/i);
+	const { readConfig, saveShortcut } = await import("../lib/config.ts");
+	assert.equal((await readConfig()).terminalCwd, true);
+	await command.handler("config", state.ctx);
+	assert.match(state.notifications.at(-1).message, /Terminal.*on/);
+	await command.handler("config terminal-cwd invalid", state.ctx);
+	assert.equal(state.notifications.at(-1).level, "error");
+	assert.equal((await readConfig()).terminalCwd, true);
+	await command.handler("config terminal-cwd off", state.ctx);
+	assert.equal((await readConfig()).terminalCwd, false);
+	await saveShortcut("ctrl+alt+w");
 });
 
 test("subcommand suggestions explain each option without changing command values", async () => {

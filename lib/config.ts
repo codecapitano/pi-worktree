@@ -12,8 +12,8 @@ const SPECIAL_KEYS = new Set([
 ]);
 const SYMBOL_KEYS = new Set(["`", "-", "=", "[", "]", "\\", ";", "'", ",", ".", "/", "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "_", "+", "|", "~", "{", "}", ":", "<", ">", "?"]);
 
-type Config = { version: 1; shortcut: string | null };
-export type ConfigResult = { shortcut: string | null; diagnostic: string | null };
+type Config = { version: 1; shortcut: string | null; terminalCwd: boolean };
+export type ConfigResult = { shortcut: string | null; terminalCwd: boolean; diagnostic: string | null };
 export type SaveResult = { ok: boolean; diagnostic: string | null };
 export type ValidationResult = { valid: boolean; diagnostic: string | null };
 
@@ -60,7 +60,7 @@ export function isValidShortcut(value: unknown): boolean {
 }
 
 function invalidConfig(diagnostic: string): ConfigResult {
-	return { shortcut: null, diagnostic };
+	return { shortcut: null, terminalCwd: false, diagnostic };
 }
 
 function parseConfig(raw: string): ConfigResult {
@@ -77,14 +77,16 @@ function parseConfig(raw: string): ConfigResult {
 	if (shortcut !== null && typeof shortcut !== "string") return invalidConfig("Shortcut config shortcut must be a string or null");
 	const validation = shortcut === null ? { valid: true, diagnostic: null } : validateShortcut(shortcut);
 	if (!validation.valid) return invalidConfig(validation.diagnostic!);
-	return { shortcut, diagnostic: null };
+	const terminalCwd = (parsed as { terminalCwd?: unknown }).terminalCwd;
+	if (terminalCwd !== undefined && typeof terminalCwd !== "boolean") return invalidConfig("Config terminalCwd must be a boolean");
+	return { shortcut, terminalCwd: terminalCwd ?? false, diagnostic: null };
 }
 
 export function readConfigSync(agentDir = getAgentDir()): ConfigResult {
 	try {
 		return parseConfig(readFileSync(configPath(agentDir), "utf8"));
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { shortcut: DEFAULT_SHORTCUT, diagnostic: null };
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { shortcut: DEFAULT_SHORTCUT, terminalCwd: false, diagnostic: null };
 		return invalidConfig(`Could not read shortcut config: ${(error as Error).message}`);
 	}
 }
@@ -94,7 +96,7 @@ export async function readConfig(agentDir = getAgentDir()): Promise<ConfigResult
 	try {
 		raw = await readFile(configPath(agentDir), "utf8");
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { shortcut: DEFAULT_SHORTCUT, diagnostic: null };
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { shortcut: DEFAULT_SHORTCUT, terminalCwd: false, diagnostic: null };
 		return invalidConfig(`Could not read shortcut config: ${(error as Error).message}`);
 	}
 	return parseConfig(raw);
@@ -105,18 +107,33 @@ export async function saveShortcut(shortcut: string | null, agentDir = getAgentD
 		const validation = validateShortcut(shortcut);
 		if (!validation.valid) return { ok: false, diagnostic: validation.diagnostic };
 	}
+	return savePreference({ shortcut }, agentDir);
+}
+
+export async function saveTerminalCwd(terminalCwd: boolean, agentDir = getAgentDir()): Promise<SaveResult> {
+	if (typeof terminalCwd !== "boolean") return { ok: false, diagnostic: "Config terminalCwd must be a boolean" };
+	return savePreference({ terminalCwd }, agentDir);
+}
+
+async function savePreference(change: Partial<Pick<Config, "shortcut" | "terminalCwd">>, agentDir: string): Promise<SaveResult> {
+	const previous = await readConfig(agentDir);
+	if (previous.diagnostic) return {
+		ok: false,
+		diagnostic: `${previous.diagnostic}\nFix or remove ${configPath(agentDir)}, then retry. Existing settings were not changed.`,
+	};
+	const config: Config = { version: 1, shortcut: previous.shortcut, terminalCwd: previous.terminalCwd, ...change };
 	const path = configPath(agentDir);
 	const directory = dirname(path);
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	try {
 		await mkdir(directory, { recursive: true });
-		await writeFile(temporary, `${JSON.stringify({ version: 1, shortcut }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+		await writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 		await rename(temporary, path);
 		try { await chmod(path, 0o600); } catch { /* best effort */ }
 		return { ok: true, diagnostic: null };
 	} catch (error) {
 		try { await unlink(temporary); } catch { /* best effort */ }
-		return { ok: false, diagnostic: `Could not save shortcut config: ${(error as Error).message}` };
+		return { ok: false, diagnostic: `Could not save worktree config: ${(error as Error).message}` };
 	}
 }
 

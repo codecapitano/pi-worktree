@@ -21,17 +21,39 @@ import { execFile } from "node:child_process";
 import { access, mkdir, realpath, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { getConfigPath, readConfigSync, saveShortcut, validateShortcut } from "../lib/config.ts";
+import { getConfigPath, readConfigSync, saveShortcut, saveTerminalCwd, validateShortcut } from "../lib/config.ts";
 import { createFreshSession } from "../lib/fresh-session.ts";
 import { finishWorktree, sessionFileOutsideWorktree } from "../lib/finish-worktree.ts";
 import { continueConversationInWorktree, preflightConversationSwitch } from "../lib/session-switch.ts";
 import { showWorktreePicker } from "../lib/worktree-picker.ts";
+import { confirmWorktreeSwitch } from "../lib/switch-confirmation.ts";
+import { createTerminalCwdReporter } from "../lib/terminal-cwd.ts";
 
 type ExecResult = { code: number; stdout: string; stderr: string };
 const execFileAsync = promisify(execFile);
 // Survives extension reload when switching sessions in the same Pi process.
 const removalsKey = Symbol.for("codecapitano.pi-worktree.pending-removals");
 const pendingRemovals: Set<string> = ((globalThis as any)[removalsKey] ??= new Set<string>());
+// Keep data, not implementation closures, across session replacement and /reload.
+const terminalKey = Symbol.for("codecapitano.pi-worktree.terminal-cwd-state");
+function terminalReporter(): ReturnType<typeof createTerminalCwdReporter> {
+	const state: { originalCwd: string; reported?: string } =
+		((globalThis as any)[terminalKey] ??= { originalCwd: process.cwd() });
+	return createTerminalCwdReporter(state.originalCwd, process.stdout, process.env, state);
+}
+
+async function confirmSwitch(ctx: ExtensionCommandContext, title: string, message: string): Promise<boolean> {
+	const config = readConfigSync();
+	if (config.diagnostic) ctx.ui.notify(config.diagnostic, "warning");
+	return confirmWorktreeSwitch(ctx.ui, title, message, {
+		enabled: config.terminalCwd,
+		save: async (enabled) => {
+			const saved = await saveTerminalCwd(enabled);
+			if (saved.ok) terminalReporter().update(ctx.cwd, enabled);
+			return saved;
+		},
+	});
+}
 
 // Unlike pi.exec, this remains usable after Pi replaces the session runtime.
 async function runGitAfterSwitch(args: string[], cwd: string): Promise<ExecResult> {
@@ -738,7 +760,7 @@ async function switchToWorktree(
 			return;
 		}
 		if (!(await inspectCheckout(pi, ctx, target))) return;
-		if (!(await ctx.ui.confirm("Continue in worktree?", `${target}\n\nWorktree code, AGENTS.md, CLAUDE.md, and trusted .pi resources may load. Review the target before continuing.`))) {
+		if (!(await confirmSwitch(ctx, "Continue in worktree?", `${target}\n\nWorktree code, AGENTS.md, CLAUDE.md, and trusted .pi resources may load. Review the target before continuing.`))) {
 			ctx.ui.notify(`Worktree retained at ${target}`, "info");
 			return;
 		}
@@ -796,7 +818,6 @@ async function finishCurrentWorktree(pi: ExtensionAPI, ctx: ExtensionCommandCont
 		ctx.ui.notify("This worktree is already being removed", "warning");
 		return;
 	}
-	const codingAgent = await import("@earendil-works/pi-coding-agent");
 	const registered = async (path: string) => {
 		const listed = await runGitAfterSwitch(["worktree", "list", "--porcelain", "-z"], mainPath);
 		if (listed.code !== 0) return false;
@@ -808,7 +829,12 @@ async function finishCurrentWorktree(pi: ExtensionAPI, ctx: ExtensionCommandCont
 	};
 	const outsideSource = (file: string) => sessionFileOutsideWorktree(source, file);
 	// Override cwd without eagerly reading Pi's guarded context getters.
-	const finishCtx = Object.create(ctx, { cwd: { value: source } }) as ExtensionCommandContext;
+	const finishCtx = Object.create(ctx, {
+		cwd: { value: source },
+		ui: { value: Object.create(ctx.ui, {
+			confirm: { value: (title: string, message: string) => confirmSwitch(ctx, title, message) },
+		}) },
+	}) as ExtensionCommandContext;
 	switchInProgress = true;
 	pendingRemovals.add(source);
 	try {
@@ -819,11 +845,13 @@ async function finishCurrentWorktree(pi: ExtensionAPI, ctx: ExtensionCommandCont
 				return typeof manager.usesDefaultSessionDir === "function" && manager.usesDefaultSessionDir();
 			},
 			revalidate: () => registered(mainPath),
-			createSession: (targetCwd, sessionDir, entries) => createFreshSession(
-				(cwd, dir) => codingAgent.SessionManager.create(cwd, dir), targetCwd, sessionDir, entries,
-			),
+			createSession: async (targetCwd, sessionDir, entries) => {
+				const { SessionManager } = await import("@earendil-works/pi-coding-agent");
+				return createFreshSession((cwd, dir) => SessionManager.create(cwd, dir), targetCwd, sessionDir, entries);
+			},
 			forkSession: async (sourceSession, targetCwd, sessionDir) => {
-				const manager = codingAgent.SessionManager.forkFrom(sourceSession, targetCwd, sessionDir);
+				const { SessionManager } = await import("@earendil-works/pi-coding-agent");
+				const manager = SessionManager.forkFrom(sourceSession, targetCwd, sessionDir);
 				const path = manager.getSessionFile();
 				if (!path) throw new Error("Pi did not create a persisted target session");
 				return { path };
@@ -880,13 +908,18 @@ async function completionItems(pi: ExtensionAPI, cwd: string, prefix: string) {
 		{ value: "ls", description: "List worktrees" },
 		{ value: "rm", description: "Remove a clean worktree" },
 		{ value: "done", description: "Leave and remove the current clean worktree" },
-		{ value: "config", description: "Show or change the worktree picker shortcut" },
+		{ value: "config", description: "Configure the picker shortcut and new terminal pane directory" },
 		{ value: "help", description: "Show worktree command usage" },
 	];
 	if (!trimmed.includes(" ")) {
 		return subs.filter((item) => item.value.startsWith(command)).map((item) => ({ ...item, label: item.value }));
 	}
 	const query = rest.join(" ").toLowerCase();
+	if (command === "config") {
+		return ["shortcut", "terminal-cwd", "terminal-cwd on", "terminal-cwd off"]
+			.filter((value) => value.startsWith(query))
+			.map((value) => ({ value: `config ${value}`, label: value }));
+	}
 	if (["switch", "open", "path", "rm"].includes(command)) {
 		let worktrees: Worktree[];
 		try { worktrees = await listWorktrees(pi, cwd); } catch { return null; }
@@ -906,25 +939,51 @@ async function completionItems(pi: ExtensionAPI, cwd: string, prefix: string) {
 export default function (pi: ExtensionAPI) {
 	let activeCwd = process.cwd();
 	const config = readConfigSync();
+	const terminal = terminalReporter();
 	pi.on?.("session_start", (_event, ctx) => {
 		activeCwd = ctx.cwd;
-		if (config.diagnostic) ctx.ui.notify(config.diagnostic, "warning");
+		const current = readConfigSync();
+		if (current.diagnostic) ctx.ui.notify(current.diagnostic, "warning");
+		if (ctx.mode === "tui" && ctx.hasUI) terminal.update(ctx.cwd, current.terminalCwd);
+	});
+	pi.on?.("session_shutdown", (event, ctx) => {
+		if (event.reason === "quit" && ctx.mode === "tui") terminal.restore();
 	});
 
 	const handleCommand = async (args: string, ctx: ExtensionCommandContext) => {
 		const parsed = parseArgs(args);
 		if (parsed.cmd === "config") {
-			const [setting, value] = parsed.rest.split(/\s+/, 2);
+			const [setting, value, ...extra] = parsed.rest.split(/\s+/);
+			const current = readConfigSync();
 			if (!setting) {
-				ctx.ui.notify(`Shortcut: ${config.shortcut ?? "off"}\nConfig: ${getConfigPath()}`, "info");
+				ctx.ui.notify(`Shortcut: ${current.shortcut ?? "off"}\nTerminal cwd: ${current.terminalCwd ? "on" : "off"}\nConfig: ${getConfigPath()}`, "info");
+				return;
+			}
+			if (setting === "terminal-cwd") {
+				if (!value) {
+					ctx.ui.notify(`Terminal cwd: ${current.terminalCwd ? "on" : "off"}\nConfig: ${getConfigPath()}`, "info");
+					return;
+				}
+				if (!["on", "off"].includes(value) || extra.length) {
+					ctx.ui.notify("Usage: /wt config terminal-cwd <on|off>", "error");
+					return;
+				}
+				const enabled = value === "on";
+				const saved = await saveTerminalCwd(enabled);
+				if (!saved.ok) {
+					ctx.ui.notify(saved.diagnostic ?? "Could not save terminal pane preference", "error");
+					return;
+				}
+				if (ctx.mode === "tui" && ctx.hasUI) terminal.update(ctx.cwd, enabled);
+				ctx.ui.notify(`Terminal cwd saved as ${value}. ${enabled ? "New panes can follow Pi in iTerm2 when configured to reuse the previous directory; tmux and screen are not supported." : "New panes keep the original directory."}`, "info");
 				return;
 			}
 			if (setting === "shortcut" && !value) {
-				ctx.ui.notify(`Shortcut: ${config.shortcut ?? "off"}\nConfig: ${getConfigPath()}`, "info");
+				ctx.ui.notify(`Shortcut: ${current.shortcut ?? "off"}\nConfig: ${getConfigPath()}`, "info");
 				return;
 			}
-			if (setting !== "shortcut" || !value) {
-				ctx.ui.notify("Usage: /wt config shortcut <key|off>", "error");
+			if (setting !== "shortcut" || !value || extra.length) {
+				ctx.ui.notify("Usage: /wt config shortcut <key|off> or /wt config terminal-cwd <on|off>", "error");
 				return;
 			}
 			const shortcut = value.toLowerCase() === "off" ? null : value;
@@ -957,6 +1016,7 @@ export default function (pi: ExtensionAPI) {
 				"/wt rm <branch>             remove clean worktree",
 				"/wt done                    leave and remove current clean worktree",
 				"/wt config shortcut <key>   configure shortcut (or off)",
+				"/wt config terminal-cwd <on|off>  new panes follow Pi (iTerm2)",
 				"/worktree                   long alias for /wt",
 			].join("\n"), "info");
 			return;

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Show a remembered new-terminal-pane preference in worktree switch confirmations. Keep the original directory by default, or let new iTerm2 panes follow Pi's worktree when directory reuse is enabled.
+- Add `/wt config terminal-cwd <on|off>` to change the preference without switching.
+
 ## [2.1.0](https://github.com/codecapitano/pi-worktree/compare/pi-worktree-v2.0.1...pi-worktree-v2.1.0) - 2026-09-25
 
 ### Added

@@ -23,10 +23,16 @@ test("configPath resolves the user config location", () => {
 	assert.equal(getAgentDir({ PI_CODING_AGENT_DIR: "" }, "/home/test"), "/home/test/.pi/agent");
 });
 
+test("terminal directory reporting defaults to off", async () => {
+	const agentDir = await tempAgentDir();
+	assert.equal((await readConfig(agentDir)).terminalCwd, false);
+});
+
 test("missing config uses the default shortcut", async () => {
 	const agentDir = await tempAgentDir();
 	assert.deepEqual(await readConfig(agentDir), {
 		shortcut: DEFAULT_SHORTCUT,
+		terminalCwd: false,
 		diagnostic: null,
 	});
 });
@@ -36,6 +42,7 @@ test("valid config is read", async () => {
 	await saveShortcut("super+f12", agentDir);
 	assert.deepEqual(await readConfig(agentDir), {
 		shortcut: "super+f12",
+		terminalCwd: false,
 		diagnostic: null,
 	});
 });
@@ -56,6 +63,47 @@ test("malformed and invalid configs disable the shortcut with diagnostics", asyn
 	const result = await readConfig(agentDir);
 	assert.equal(result.shortcut, null);
 	assert.match(result.diagnostic, /modifier|shortcut/i);
+});
+
+test("saving either preference preserves the other", async () => {
+	const { saveTerminalCwd } = await import("../lib/config.ts");
+	assert.equal(typeof saveTerminalCwd, "function");
+	const agentDir = await tempAgentDir();
+	assert.equal((await saveTerminalCwd(true, agentDir)).ok, true);
+	assert.equal((await readConfig(agentDir)).shortcut, DEFAULT_SHORTCUT);
+	await saveShortcut("super+f12", agentDir);
+	assert.equal((await readConfig(agentDir)).terminalCwd, true);
+	await saveTerminalCwd(false, agentDir);
+	assert.equal((await readConfig(agentDir)).shortcut, "super+f12");
+	assert.equal((await readConfig(agentDir)).terminalCwd, false);
+	assert.equal((await stat(configPath(agentDir))).mode & 0o777, 0o600);
+});
+
+test("legacy config keeps terminal reporting off", async () => {
+	const agentDir = await tempAgentDir();
+	await saveShortcut("ctrl+w", agentDir);
+	await writeFile(configPath(agentDir), JSON.stringify({ version: 1, shortcut: "ctrl+w" }));
+	assert.equal((await readConfig(agentDir)).terminalCwd, false);
+});
+
+test("invalid terminal preference fails closed and cannot be silently overwritten", async () => {
+	const { saveTerminalCwd } = await import("../lib/config.ts");
+	const agentDir = await tempAgentDir();
+	await saveShortcut("ctrl+w", agentDir);
+	for (const invalid of ["true", null, 1]) {
+		const raw = JSON.stringify({ version: 1, shortcut: "ctrl+w", terminalCwd: invalid });
+		await writeFile(configPath(agentDir), raw);
+		const config = await readConfig(agentDir);
+		assert.equal(config.terminalCwd, false);
+		assert.match(config.diagnostic, /boolean/);
+		const saved = await saveTerminalCwd(true, agentDir);
+		assert.equal(saved.ok, false);
+		assert.ok(saved.diagnostic.includes(configPath(agentDir)));
+		assert.match(saved.diagnostic, /Fix or remove/);
+		assert.equal((await saveShortcut("ctrl+x", agentDir)).ok, false);
+		assert.equal(await readFile(configPath(agentDir), "utf8"), raw);
+	}
+	assert.equal((await saveTerminalCwd("on", await tempAgentDir())).ok, false);
 });
 
 test("validates documented Pi shortcut syntax", () => {
@@ -79,6 +127,7 @@ test("saveShortcut writes atomically with restrictive permissions", async () => 
 	assert.deepEqual(JSON.parse(await readFile(configPath(agentDir), "utf8")), {
 		version: 1,
 		shortcut: "ctrl+alt+w",
+		terminalCwd: false,
 	});
 	assert.equal((await stat(configPath(agentDir))).mode & 0o777, 0o600);
 

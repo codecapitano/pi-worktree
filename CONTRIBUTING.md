@@ -10,7 +10,9 @@ By contributing, you agree to license your contribution under the repository's [
 - `lib/worktree-picker.ts`: filterable TUI picker and picker labels.
 - `lib/session-switch.ts`: session-history checks, latest-leaf checks, conversation forking, and session switching.
 - `lib/finish-worktree.ts`: `/wt done` safety checks and cleanup after session replacement.
-- `lib/config.ts`: shortcut validation and persistence.
+- `lib/config.ts`: shortcut validation and user preference persistence.
+- `lib/switch-confirmation.ts`: trust confirmation with a remembered terminal-pane preference.
+- `lib/terminal-cwd.ts`: guarded iTerm2 directory reporting and restoration.
 - `test/`: Node test files for configuration, Git behavior, session switching, and picker behavior.
 
 Pi loads the TypeScript source directly. There is no build step.
@@ -55,6 +57,7 @@ Manually verify:
 5. A switch requires TUI mode, an idle Pi with no queued messages, and the latest conversation leaf. Before sending your first message, try `/wt new` and `/wt pr`; confirm that switching works and preserves session setup entries. For existing conversations, confirm that the new conversation is a fork and the original remains available. Switching must refuse an existing conversation whose session file is missing.
 6. Check the default `ctrl+alt+w` shortcut, `/wt config shortcut <key|off>`, `/reload`, and `/hotkeys`.
 7. Review PR trust prompts and confirm that worktrees are not sandboxes.
+8. In iTerm2 with split-pane directory reuse enabled, toggle **New terminal panes** in a switch confirmation. Check both modes by splitting the Pi pane and running `pwd` in the new pane. Confirm that the choice survives `/reload`, `/wt done` reports the main checkout, and disabling follow mode or quitting restores the launch directory. Cancelling a switch must not report the unconfirmed target. Existing panes must stay unchanged. Check that no reporting occurs in tmux, screen, another terminal, or non-TUI mode.
 
 Use a disposable repository for removal, dirty-worktree, PR, and trust checks.
 
